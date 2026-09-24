@@ -97,27 +97,38 @@ public final class OAuthManager: ObservableObject {
         let clientId = AuthConfig.activeClientId
         let scopes = AuthConfig.scopes
         
-        return try await withCheckedThrowingContinuation { continuation in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(UInt16, String), Error>) in
             do {
                 let tcpOptions = NWProtocolTCP.Options()
                 let parameters = NWParameters(tls: nil, tcp: tcpOptions)
                 parameters.allowLocalEndpointReuse = true
                 
                 let listener = try NWListener(using: parameters, on: .any)
-                var continuationResumed = false
-                let resumeLock = NSLock()
                 
-                @Sendable func safeResume(returning result: Result<(UInt16, String), Error>) {
-                    resumeLock.lock()
-                    defer { resumeLock.unlock() }
-                    guard !continuationResumed else { return }
-                    continuationResumed = true
-                    listener.cancel()
-                    switch result {
-                    case .success(let val):
-                        continuation.resume(returning: val)
-                    case .failure(let err):
-                        continuation.resume(throwing: err)
+                final class SafeResumeBox: @unchecked Sendable {
+                    private let lock = NSLock()
+                    private var hasResumed = false
+                    
+                    func resumeOnce(_ block: () -> Void) {
+                        lock.lock()
+                        defer { lock.unlock() }
+                        guard !hasResumed else { return }
+                        hasResumed = true
+                        block()
+                    }
+                }
+                
+                let resumeBox = SafeResumeBox()
+                
+                let safeResume: @Sendable (Result<(UInt16, String), Error>) -> Void = { result in
+                    resumeBox.resumeOnce {
+                        listener.cancel()
+                        switch result {
+                        case .success(let val):
+                            continuation.resume(returning: val)
+                        case .failure(let err):
+                            continuation.resume(throwing: err)
+                        }
                     }
                 }
                 
@@ -145,7 +156,7 @@ public final class OAuthManager: ObservableObject {
                             }
                         }
                     case .failed(let error):
-                        safeResume(returning: .failure(error))
+                        safeResume(.failure(error))
                     default:
                         break
                     }
@@ -155,7 +166,7 @@ public final class OAuthManager: ObservableObject {
                     connection.start(queue: .global())
                     connection.receive(minimumIncompleteLength: 4, maximumLength: 4096) { content, _, isComplete, error in
                         if let error = error {
-                            safeResume(returning: .failure(error))
+                            safeResume(.failure(error))
                             return
                         }
                         
@@ -193,7 +204,7 @@ public final class OAuthManager: ObservableObject {
                         }))
                         
                         if let port = listener.port?.rawValue, let extractedCode = code {
-                            safeResume(returning: .success((port, extractedCode)))
+                            safeResume(.success((port, extractedCode)))
                         }
                     }
                 }
