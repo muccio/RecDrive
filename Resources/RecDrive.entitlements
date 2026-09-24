@@ -2,12 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Outgoing network connections for Google Drive REST API v3 -->
-    <key>com.apple.security.network.client</key>
-    <true/>
-    <!-- Local server for OAuth loopback redirect listener -->
-    <key>com.apple.security.network.server</key>
-    <true/>
     <!-- Microphone access entitlement -->
     <key>com.apple.security.device.audio-input</key>
     <true/>

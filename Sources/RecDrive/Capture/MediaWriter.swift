@@ -4,8 +4,7 @@ import CoreMedia
 import VideoToolbox
 
 /// Non-blocking, hardware-accelerated media multiplexer using AVAssetWriter.
-/// Directly encodes NV12 frames from ScreenCaptureKit via Apple Silicon VideoToolbox
-/// and compresses system and microphone audio into AAC tracks.
+/// Directly encodes video frames from ScreenCaptureKit and audio tracks from system and microphone.
 public final class MediaWriter: @unchecked Sendable {
     public let outputURL: URL
     private let videoWidth: Int
@@ -21,6 +20,10 @@ public final class MediaWriter: @unchecked Sendable {
     
     private var isSessionStarted = false
     private var sessionStartTime: CMTime = .invalid
+    private var hasAppendedVideo = false
+    private var hasAppendedAudio = false
+    private var hasAppendedMic = false
+    
     private let writerQueue = DispatchQueue(label: "com.recdrive.mediawriter", qos: .userInteractive)
     private let lock = NSLock()
     
@@ -33,8 +36,9 @@ public final class MediaWriter: @unchecked Sendable {
         hasMicrophoneAudio: Bool = false
     ) {
         self.outputURL = outputURL
-        self.videoWidth = videoWidth
-        self.videoHeight = videoHeight
+        // Ensure even dimensions required by hardware encoders
+        self.videoWidth = max(2, (videoWidth / 2) * 2)
+        self.videoHeight = max(2, (videoHeight / 2) * 2)
         self.codec = codec
         self.hasSystemAudio = hasSystemAudio
         self.hasMicrophoneAudio = hasMicrophoneAudio
@@ -52,7 +56,9 @@ public final class MediaWriter: @unchecked Sendable {
         }
         
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
-        writer.shouldOptimizeForNetworkUse = true
+        // Set shouldOptimizeForNetworkUse to false so writes go directly to output file
+        // preventing empty 0kb files and sidecar leftovers.
+        writer.shouldOptimizeForNetworkUse = false
         
         // 1. Hardware Video Compression Settings
         let bitrate = calculateTargetBitrate(width: videoWidth, height: videoHeight)
@@ -77,7 +83,7 @@ public final class MediaWriter: @unchecked Sendable {
         let vInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         vInput.expectsMediaDataInRealTime = true
         guard writer.canAdd(vInput) else {
-            throw NSError(domain: "RecDrive.MediaWriter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Cannot add video input to AVAssetWriter."])
+            throw NSError(domain: "RecDrive.MediaWriter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Impossibile aggiungere video input ad AVAssetWriter."])
         }
         writer.add(vInput)
         self.videoInput = vInput
@@ -115,17 +121,25 @@ public final class MediaWriter: @unchecked Sendable {
         }
         
         guard writer.startWriting() else {
-            throw writer.error ?? NSError(domain: "RecDrive.MediaWriter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Failed to start AVAssetWriter."])
+            throw writer.error ?? NSError(domain: "RecDrive.MediaWriter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Errore durante l'avvio di AVAssetWriter."])
         }
         
         self.assetWriter = writer
         self.isSessionStarted = false
         self.sessionStartTime = .invalid
+        self.hasAppendedVideo = false
+        self.hasAppendedAudio = false
+        self.hasAppendedMic = false
     }
     
     // MARK: - Append Video Sample Buffer
     
     public func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        guard sampleBuffer.isValid,
+              CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
+            return
+        }
+        
         writerQueue.async { [weak self] in
             guard let self = self,
                   let writer = self.assetWriter,
@@ -144,7 +158,12 @@ public final class MediaWriter: @unchecked Sendable {
             self.lock.unlock()
             
             if vInput.isReadyForMoreMediaData {
-                vInput.append(sampleBuffer)
+                let success = vInput.append(sampleBuffer)
+                if success {
+                    self.hasAppendedVideo = true
+                } else {
+                    print("[MediaWriter] appendVideoSampleBuffer failed. Status: \(writer.status.rawValue), error: \(String(describing: writer.error))")
+                }
             }
         }
     }
@@ -152,6 +171,11 @@ public final class MediaWriter: @unchecked Sendable {
     // MARK: - Append Audio Sample Buffers
     
     public func appendSystemAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        guard sampleBuffer.isValid,
+              CMSampleBufferGetNumSamples(sampleBuffer) > 0 else {
+            return
+        }
+        
         writerQueue.async { [weak self] in
             guard let self = self,
                   let writer = self.assetWriter,
@@ -161,7 +185,6 @@ public final class MediaWriter: @unchecked Sendable {
             let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             guard pts.isValid else { return }
             
-            // Drop audio packets before video session has initialized
             self.lock.lock()
             let started = self.isSessionStarted
             let startPts = self.sessionStartTime
@@ -170,12 +193,20 @@ public final class MediaWriter: @unchecked Sendable {
             guard started, pts >= startPts else { return }
             
             if aInput.isReadyForMoreMediaData {
-                aInput.append(sampleBuffer)
+                let success = aInput.append(sampleBuffer)
+                if success {
+                    self.hasAppendedAudio = true
+                }
             }
         }
     }
     
     public func appendMicrophoneAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        guard sampleBuffer.isValid,
+              CMSampleBufferGetNumSamples(sampleBuffer) > 0 else {
+            return
+        }
+        
         writerQueue.async { [weak self] in
             guard let self = self,
                   let writer = self.assetWriter,
@@ -193,7 +224,10 @@ public final class MediaWriter: @unchecked Sendable {
             guard started, pts >= startPts else { return }
             
             if micInput.isReadyForMoreMediaData {
-                micInput.append(sampleBuffer)
+                let success = micInput.append(sampleBuffer)
+                if success {
+                    self.hasAppendedMic = true
+                }
             }
         }
     }
@@ -204,22 +238,44 @@ public final class MediaWriter: @unchecked Sendable {
         return try await withCheckedThrowingContinuation { continuation in
             writerQueue.async { [weak self] in
                 guard let self = self, let writer = self.assetWriter else {
-                    continuation.resume(throwing: NSError(domain: "RecDrive.MediaWriter", code: -3, userInfo: [NSLocalizedDescriptionKey: "No active writer found."]))
+                    continuation.resume(throwing: NSError(domain: "RecDrive.MediaWriter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Scrittura non attiva o già completata."]))
                     return
                 }
                 
-                self.videoInput?.markAsFinished()
-                self.systemAudioInput?.markAsFinished()
-                self.microphoneAudioInput?.markAsFinished()
+                self.lock.lock()
+                let started = self.isSessionStarted
+                self.lock.unlock()
                 
-                writer.finishWriting {
-                    if writer.status == .completed {
-                        continuation.resume(returning: self.outputURL)
-                    } else if let error = writer.error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(returning: self.outputURL)
+                // If session never started, start at .zero to allow clean finalization
+                if !started && writer.status == .writing {
+                    writer.startSession(atSourceTime: .zero)
+                }
+                
+                if writer.status == .writing {
+                    self.videoInput?.markAsFinished()
+                    self.systemAudioInput?.markAsFinished()
+                    self.microphoneAudioInput?.markAsFinished()
+                    
+                    writer.finishWriting {
+                        if writer.status == .completed {
+                            continuation.resume(returning: self.outputURL)
+                        } else if let error = writer.error {
+                            print("[MediaWriter] finishWriting failed with error: \(error)")
+                            continuation.resume(throwing: error)
+                        } else {
+                            continuation.resume(returning: self.outputURL)
+                        }
                     }
+                } else if writer.status == .completed {
+                    continuation.resume(returning: self.outputURL)
+                } else {
+                    let error = writer.error ?? NSError(
+                        domain: "RecDrive.MediaWriter",
+                        code: -4,
+                        userInfo: [NSLocalizedDescriptionKey: "Stato finale AVAssetWriter non valido: \(writer.status.rawValue)"]
+                    )
+                    print("[MediaWriter] finishWriting unexpected state: \(writer.status.rawValue), error: \(error)")
+                    continuation.resume(throwing: error)
                 }
             }
         }

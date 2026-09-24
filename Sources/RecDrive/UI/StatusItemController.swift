@@ -5,7 +5,6 @@ public enum StatusItemState: Equatable {
     case idle
     case recording
     case stopping
-    case uploading(progress: Double)
     case completed
 }
 
@@ -63,18 +62,12 @@ public final class StatusItemController: NSObject {
             startRecordingAnimation()
             
         case .stopping:
-            button.title = " Stopping..."
+            button.title = " Sto fermando..."
             button.image = NSImage(systemSymbolName: "circle.slash", accessibilityDescription: "Stopping")
             button.image?.isTemplate = true
             
-        case .uploading(let progress):
-            let percent = Int(progress * 100)
-            button.title = " \(percent)%"
-            button.image = NSImage(systemSymbolName: "icloud.and.arrow.up", accessibilityDescription: "Uploading")
-            button.image?.isTemplate = true
-            
         case .completed:
-            button.title = " Done"
+            button.title = " Salvato"
             button.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Completed")
             button.image?.isTemplate = false
             

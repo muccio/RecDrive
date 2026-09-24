@@ -31,9 +31,9 @@ chmod +x "${MACOS_DIR}/RecDrive"
 # Copy Info.plist and Entitlements
 cp "${PROJECT_DIR}/Resources/Info.plist" "${CONTENTS_DIR}/Info.plist"
 
-# Ad-hoc codesign with entitlements
-echo "==> Applying codesign with entitlements..."
-codesign --force --deep --sign - --entitlements "${PROJECT_DIR}/Resources/RecDrive.entitlements" "${APP_DIR}"
+# Ad-hoc codesign with entitlements and stable designated requirement
+echo "==> Applying codesign with entitlements and designated requirement..."
+codesign --force --deep --sign - -r='designated => identifier "com.recdrive.app"' --entitlements "${PROJECT_DIR}/Resources/RecDrive.entitlements" "${APP_DIR}"
 
 echo "=========================================================="
 echo "✓ RecDrive.app successfully bundled at:"

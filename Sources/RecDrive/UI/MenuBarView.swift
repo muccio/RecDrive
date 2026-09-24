@@ -10,15 +10,17 @@ final class MenuBarUIState: ObservableObject {
 struct MenuBarView: View {
     @ObservedObject var appState = AppState.shared
     @ObservedObject var preferences = PreferencesStorage.shared
-    @ObservedObject var oauthManager = OAuthManager.shared
     @StateObject private var uiState = MenuBarUIState()
     
     var body: some View {
-        VStack(spacing: 14) {
-            // Header: Title and Status
+        VStack(spacing: 12) {
+            // Header: Title and Stopwatch
             headerView
             
             Divider()
+            
+            // Lesson Title Field
+            lessonTitleSection
             
             // Primary Recording Action
             recordButtonSection
@@ -31,18 +33,26 @@ struct MenuBarView: View {
             // Audio Controls
             audioControlsSection
             
-            // Upload Banner / Link
-            if let link = appState.lastUploadedFileLink {
-                recentUploadBanner(link: link)
+            // Saved Recording Banner / Actions
+            if let lastURL = appState.lastRecordedURL {
+                recentSavedBanner(url: lastURL)
+            }
+            
+            // Screen Capture Permission Warning Banner
+            if !appState.hasScreenCapturePermission {
+                permissionWarningBanner
             }
             
             Divider()
             
-            // Footer: Settings & Quit
+            // Footer: Settings, Folder, Quit
             footerSection
         }
         .padding(14)
-        .frame(width: 310)
+        .frame(width: 320)
+        .onAppear {
+            appState.checkScreenCapturePermission()
+        }
         .sheet(isPresented: $uiState.showingSourcePicker) {
             SourcePickerView()
         }
@@ -72,23 +82,42 @@ struct MenuBarView: View {
                         .font(.system(.subheadline, design: .monospaced))
                         .foregroundColor(.red)
                 }
-            } else if appState.isUploading {
-                HStack(spacing: 6) {
-                    ProgressView(value: appState.uploadProgressFraction)
-                        .frame(width: 50)
-                    Text("\(Int(appState.uploadProgressFraction * 100))%")
-                        .font(.caption)
-                        .foregroundColor(.blue)
-                }
             } else {
-                Text(oauthManager.isAuthenticated ? "Connected" : "Offline")
+                Text("Pronto")
                     .font(.caption2)
-                    .foregroundColor(oauthManager.isAuthenticated ? .green : .secondary)
+                    .foregroundColor(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Color.primary.opacity(0.06))
                     .cornerRadius(4)
             }
+        }
+    }
+    
+    // MARK: - Lesson Title Section
+    
+    private var lessonTitleSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Titolo della Lezione:")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            HStack(spacing: 6) {
+                Image(systemName: "pencil")
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+                TextField("es. Algoritmi Lezione 1", text: $appState.lessonTitle)
+                    .textFieldStyle(.plain)
+                    .disabled(appState.isRecording)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Color.primary.opacity(0.04))
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+            )
         }
     }
     
@@ -106,9 +135,9 @@ struct MenuBarView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: appState.isRecording ? "stop.fill" : "record.circle.fill")
-                    .font(.system(size: 20))
-                Text(appState.isRecording ? "Stop Recording" : "Start Recording")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 18))
+                Text(appState.isRecording ? "Ferma Registrazione" : "Avvia Registrazione")
+                    .font(.system(size: 14, weight: .semibold))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
@@ -124,17 +153,17 @@ struct MenuBarView: View {
     private var sourceSelectionSection: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Capture Source")
-                    .font(.caption)
+                Text("Sorgente di cattura")
+                    .font(.caption2)
                     .foregroundColor(.secondary)
                 Text(appState.selectedTargetName)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
             }
             
             Spacer()
             
-            Button("Change...") {
+            Button("Cambia...") {
                 uiState.showingSourcePicker = true
             }
             .font(.caption)
@@ -150,7 +179,7 @@ struct MenuBarView: View {
     private var audioControlsSection: some View {
         HStack(spacing: 12) {
             Toggle(isOn: $preferences.captureSystemAudio) {
-                Label("System", systemImage: "speaker.wave.2")
+                Label("Audio Sistema", systemImage: "speaker.wave.2")
                     .font(.caption)
             }
             .toggleStyle(.checkbox)
@@ -159,7 +188,7 @@ struct MenuBarView: View {
             Spacer()
             
             Toggle(isOn: $preferences.captureMicrophone) {
-                Label("Mic", systemImage: "mic")
+                Label("Microfono", systemImage: "mic")
                     .font(.caption)
             }
             .toggleStyle(.checkbox)
@@ -167,37 +196,74 @@ struct MenuBarView: View {
         }
     }
     
-    // MARK: - Recent Upload Banner
+    // MARK: - Saved File Banner
     
-    private func recentUploadBanner(link: String) -> some View {
-        VStack(spacing: 6) {
+    private func recentSavedBanner(url: URL) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
-                Text("Uploaded to Google Drive")
-                    .font(.caption)
+                Text("Registrazione completata")
+                    .font(.caption.weight(.semibold))
                     .foregroundColor(.primary)
                 Spacer()
             }
             
-            HStack {
-                Button("Copy Link") {
-                    let pb = NSPasteboard.general
-                    pb.clearContents()
-                    pb.setString(link, forType: .string)
+            Text(url.lastPathComponent)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+            
+            HStack(spacing: 8) {
+                Button("Mostra nel Finder") {
+                    appState.revealLastRecordingInFinder()
                 }
                 .font(.caption)
                 
-                Button("Open in Browser") {
-                    if let url = URL(string: link) {
-                        NSWorkspace.shared.open(url)
-                    }
+                Button("Apri video") {
+                    appState.openLastRecordingFile()
                 }
                 .font(.caption)
             }
         }
         .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.green.opacity(0.1))
+        .cornerRadius(6)
+    }
+    
+    // MARK: - Permission Warning Banner
+    
+    private var permissionWarningBanner: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                Text("Permesso Schermo Necessario")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.primary)
+            }
+            
+            Text("Se hai già concesso il permesso in Impostazioni, premi 'Riavvia App' per renderlo attivo.")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            
+            HStack(spacing: 8) {
+                Button("Apri Impostazioni") {
+                    appState.openSystemSettingsScreenCapture()
+                }
+                .font(.caption)
+                
+                Button("Riavvia App") {
+                    appState.restartApp()
+                }
+                .font(.caption)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12))
         .cornerRadius(6)
     }
     
@@ -209,10 +275,19 @@ struct MenuBarView: View {
                 uiState.showingSettings = true
             } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 14))
+                    .font(.system(size: 13))
             }
             .buttonStyle(.plain)
-            .help("Preferences")
+            .help("Impostazioni")
+            
+            Button {
+                appState.openRecordingsFolder()
+            } label: {
+                Image(systemName: "folder")
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+            .help("Apri cartella registrazioni")
             
             Spacer()
             
@@ -225,7 +300,7 @@ struct MenuBarView: View {
             
             Spacer()
             
-            Button("Quit") {
+            Button("Esci") {
                 NSApplication.shared.terminate(nil)
             }
             .font(.caption)

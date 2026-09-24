@@ -30,6 +30,7 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
     public func refreshShareableContent() async {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            AppState.shared.hasScreenCapturePermission = true
             
             self.availableDisplays = content.displays.enumerated().map { index, display in
                 DisplayItem(display: display, index: index)
@@ -46,6 +47,7 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
                 .map { WindowItem(window: $0) }
         } catch {
             print("[ScreenCaptureManager] Failed to fetch shareable content: \(error)")
+            AppState.shared.hasScreenCapturePermission = false
         }
     }
     
@@ -65,8 +67,8 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         
         // 1. Determine filter and dimensions
         let filter: SCContentFilter
-        let width: Int
-        let height: Int
+        var width: Int
+        var height: Int
         
         switch target {
         case .display(let display):
@@ -79,12 +81,16 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
             height = Int(window.frame.height)
         }
         
+        // Ensure even dimensions required by hardware encoders
+        width = max(2, (width / 2) * 2)
+        height = max(2, (height / 2) * 2)
+        
         // 2. Configure Stream Properties
         let config = SCStreamConfiguration()
         config.width = width
         config.height = height
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
-        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange // NV12: Apple Silicon Hardware native
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange // NV12
         config.showsCursor = true
         config.capturesAudio = captureSystemAudio
         if captureSystemAudio {
@@ -139,14 +145,14 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
     @MainActor
     public func stopCapture() async throws -> URL {
         guard case .recording = recordingState else {
-            throw NSError(domain: "RecDrive.Capture", code: -1, userInfo: [NSLocalizedDescriptionKey: "No active recording to stop."])
+            throw NSError(domain: "RecDrive.Capture", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nessuna registrazione attiva da fermare."])
         }
         self.recordingState = .finishing
         
         timer?.invalidate()
         timer = nil
         
-        // Stop ScreenCaptureKit stream
+        // Stop ScreenCaptureKit stream first
         if let scStream = stream {
             try? await scStream.stopCapture()
             self.stream = nil
@@ -158,15 +164,21 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         // Finalize MediaWriter
         guard let writer = mediaWriter else {
             self.recordingState = .idle
-            throw NSError(domain: "RecDrive.Capture", code: -2, userInfo: [NSLocalizedDescriptionKey: "Media writer unavailable."])
+            throw NSError(domain: "RecDrive.Capture", code: -2, userInfo: [NSLocalizedDescriptionKey: "Scrittura file non disponibile."])
         }
         
-        let outputURL = try await writer.finishWriting()
-        self.mediaWriter = nil
-        self.recordingState = .idle
-        self.recordingStartTime = nil
-        
-        return outputURL
+        do {
+            let outputURL = try await writer.finishWriting()
+            self.mediaWriter = nil
+            self.recordingState = .idle
+            self.recordingStartTime = nil
+            return outputURL
+        } catch {
+            self.mediaWriter = nil
+            self.recordingState = .failed(error.localizedDescription)
+            self.recordingStartTime = nil
+            throw error
+        }
     }
 }
 
@@ -178,11 +190,25 @@ extension ScreenCaptureManager: SCStreamOutput, SCStreamDelegate {
         
         switch type {
         case .screen:
+            // Check frame status: drop frames that are not complete (e.g. idle, blank, suspended)
+            guard let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+                  let attachments = attachmentsArray.first,
+                  let statusRaw = attachments[SCStreamFrameInfo.status] as? Int,
+                  let status = SCFrameStatus(rawValue: statusRaw),
+                  status == .complete,
+                  CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
+                return
+            }
             writer.appendVideoSampleBuffer(sampleBuffer)
+            
         case .audio:
+            guard CMSampleBufferGetNumSamples(sampleBuffer) > 0 else { return }
             writer.appendSystemAudioSampleBuffer(sampleBuffer)
+            
         case .microphone:
+            guard CMSampleBufferGetNumSamples(sampleBuffer) > 0 else { return }
             writer.appendMicrophoneAudioSampleBuffer(sampleBuffer)
+            
         @unknown default:
             break
         }

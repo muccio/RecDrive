@@ -8,8 +8,20 @@ public final class LocalStorageManager {
     
     public init() {}
     
-    /// Target directory for recordings: `~/Movies/RecDrive/`
+    /// Target directory for recordings. Defaults to `~/Movies/RecDrive/`,
+    /// or custom directory configured in PreferencesStorage.
     public var recordingsDirectory: URL {
+        let customPath = PreferencesStorage.shared.customRecordingsPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !customPath.isEmpty {
+            let customURL = URL(fileURLWithPath: (customPath as NSString).expandingTildeInPath, isDirectory: true)
+            if !fileManager.fileExists(atPath: customURL.path) {
+                try? fileManager.createDirectory(at: customURL, withIntermediateDirectories: true)
+            }
+            if fileManager.isWritableFile(atPath: customURL.path) {
+                return customURL
+            }
+        }
+        
         if let moviesURL = fileManager.urls(for: .moviesDirectory, in: .userDomainMask).first {
             let recDriveDir = moviesURL.appendingPathComponent("RecDrive", isDirectory: true)
             if !fileManager.fileExists(atPath: recDriveDir.path) {
@@ -26,13 +38,24 @@ public final class LocalStorageManager {
         return tempDir
     }
     
-    /// Creates a timestamped unique file URL for a new recording.
-    /// Format: `RecDrive_YYYY-MM-dd_HH-mm-ss.mp4`
-    public func createRecordingURL(fileExtension: String = "mp4") -> URL {
+    /// Creates a timestamped unique file URL for a new recording with lesson title.
+    /// Format: `[TitoloLezione]_YYYY-MM-dd_HH-mm-ss.mp4`
+    public func createRecordingURL(lessonTitle: String? = nil, fileExtension: String = "mp4") -> URL {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let timestamp = formatter.string(from: Date())
-        let filename = "RecDrive_\(timestamp).\(fileExtension)"
+        
+        let cleanedTitle: String
+        if let title = lessonTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            let invalidChars = CharacterSet(charactersIn: "/\\:?%*|\"<>")
+            let sanitized = title.components(separatedBy: invalidChars).joined(separator: "-")
+            cleanedTitle = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            cleanedTitle = "Lezione"
+        }
+        
+        let prefix = cleanedTitle.isEmpty ? "Lezione" : cleanedTitle
+        let filename = "\(prefix)_\(timestamp).\(fileExtension)"
         return recordingsDirectory.appendingPathComponent(filename)
     }
     

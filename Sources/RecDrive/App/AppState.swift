@@ -4,47 +4,37 @@ import ScreenCaptureKit
 import AVFoundation
 
 /// Central application state coordinator on the MainActor.
-/// Connects capture pipeline, storage, OAuth authentication, and background Drive uploads.
+/// Connects capture pipeline, storage, preferences, and UI state.
 @MainActor
 public final class AppState: ObservableObject {
     public static let shared = AppState()
     
     // Subsystem Singletons
     public let captureManager = ScreenCaptureManager.shared
-    public let oauthManager = OAuthManager.shared
-    public let driveService = DriveService.shared
     public let preferences = PreferencesStorage.shared
     public let storage = LocalStorageManager.shared
     
     // UI State
     @Published public var selectedTarget: CaptureTarget?
-    @Published public var selectedTargetName: String = "Entire Screen"
+    @Published public var selectedTargetName: String = "Schermo Intero"
+    @Published public var lessonTitle: String = ""
     @Published public var isRecording: Bool = false
     @Published public var recordingDuration: TimeInterval = 0
-    
-    @Published public var isUploading: Bool = false
-    @Published public var uploadProgressFraction: Double = 0.0
-    @Published public var lastUploadedFileLink: String? = nil
     @Published public var statusMessage: String? = nil
-    
+    @Published public var lastRecordedURL: URL? = nil
     @Published public var hasScreenCapturePermission: Bool = true
     
     private var durationTimer: Timer?
     
     public init() {
+        self.lessonTitle = preferences.lastLessonTitle
         checkScreenCapturePermission()
     }
     
     // MARK: - Permissions
     
     public func checkScreenCapturePermission() {
-        if #available(macOS 14.0, *) {
-            // macOS 14+ ScreenCaptureKit preflight
-            self.hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
-        } else {
-            // macOS 13 CGPreflight
-            self.hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
-        }
+        self.hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
     }
     
     public func requestScreenCapturePermission() {
@@ -52,10 +42,34 @@ public final class AppState: ObservableObject {
         checkScreenCapturePermission()
     }
     
+    public func openSystemSettingsScreenCapture() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+    
+    public func restartApp() {
+        let appURL = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: appURL, configuration: config) { _, _ in
+            DispatchQueue.main.async {
+                NSApplication.shared.terminate(nil)
+            }
+        }
+    }
+    
     // MARK: - Start Recording
     
     public func startRecording() async {
         guard !isRecording else { return }
+        
+        checkScreenCapturePermission()
+        guard hasScreenCapturePermission else {
+            requestScreenCapturePermission()
+            self.statusMessage = "Permesso registrazione schermo necessario."
+            return
+        }
         
         // Refresh sources if no target selected
         if selectedTarget == nil {
@@ -67,11 +81,15 @@ public final class AppState: ObservableObject {
         }
         
         guard let target = selectedTarget else {
-            self.statusMessage = "Please select a display or window to record."
+            self.statusMessage = "Seleziona uno schermo o una finestra da registrare."
             return
         }
         
-        let outputURL = storage.createRecordingURL(fileExtension: "mp4")
+        // Save current lesson title for convenience
+        let trimmedTitle = lessonTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        preferences.lastLessonTitle = trimmedTitle
+        
+        let outputURL = storage.createRecordingURL(lessonTitle: trimmedTitle, fileExtension: "mp4")
         let codec: AVVideoCodecType = (preferences.videoCodec == "h264") ? .h264 : .hevc
         
         do {
@@ -86,23 +104,24 @@ public final class AppState: ObservableObject {
             
             self.isRecording = true
             self.recordingDuration = 0
-            self.statusMessage = "Recording started"
+            self.statusMessage = "Registrazione avviata..."
+            self.lastRecordedURL = nil
             
             StatusItemController.shared.updateState(.recording)
             
-            // Local high-frequency UI timer for stopwatch display
+            // High-frequency UI timer for stopwatch display
             self.durationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     self?.recordingDuration += 1.0
                 }
             }
         } catch {
-            self.statusMessage = "Failed to start capture: \(error.localizedDescription)"
+            self.statusMessage = "Avvio registrazione fallito: \(error.localizedDescription)"
             StatusItemController.shared.updateState(.idle)
         }
     }
     
-    // MARK: - Stop Recording & Background Upload
+    // MARK: - Stop Recording
     
     public func stopRecording() async {
         guard isRecording else { return }
@@ -115,47 +134,34 @@ public final class AppState: ObservableObject {
         
         do {
             let outputURL = try await captureManager.stopCapture()
-            self.statusMessage = "Saved to \(outputURL.lastPathComponent)"
-            
-            // Check if user is signed in to Google Drive
-            if oauthManager.isAuthenticated {
-                await initiateBackgroundUpload(fileURL: outputURL)
-            } else {
-                StatusItemController.shared.updateState(.idle)
-                self.statusMessage = "Recording saved locally. Sign in to Drive to enable auto-upload."
-            }
+            self.lastRecordedURL = outputURL
+            let fileSize = storage.fileSize(at: outputURL)
+            let formattedSize = ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
+            self.statusMessage = "Salvato: \(outputURL.lastPathComponent) (\(formattedSize))"
+            StatusItemController.shared.updateState(.completed)
         } catch {
-            self.statusMessage = "Error stopping capture: \(error.localizedDescription)"
+            self.statusMessage = "Errore durante il salvataggio: \(error.localizedDescription)"
             StatusItemController.shared.updateState(.idle)
         }
     }
     
-    // MARK: - Background Google Drive Upload
+    // MARK: - File Actions
     
-    private func initiateBackgroundUpload(fileURL: URL) async {
-        self.isUploading = true
-        self.uploadProgressFraction = 0.0
-        StatusItemController.shared.updateState(.uploading(progress: 0.0))
-        
-        Task {
-            do {
-                let driveFile = try await DriveService.shared.uploadRecording(fileURL: fileURL) { progress in
-                    Task { @MainActor in
-                        self.uploadProgressFraction = progress.fractionCompleted
-                        StatusItemController.shared.updateState(.uploading(progress: progress.fractionCompleted))
-                    }
-                }
-                
-                self.isUploading = false
-                let link = driveFile.webViewLink ?? "https://drive.google.com/file/d/\(driveFile.id)/view"
-                self.lastUploadedFileLink = link
-                self.statusMessage = "✓ Uploaded to Google Drive!"
-                StatusItemController.shared.updateState(.completed)
-            } catch {
-                self.isUploading = false
-                self.statusMessage = "Upload error: \(error.localizedDescription)"
-                StatusItemController.shared.updateState(.idle)
-            }
+    public func openRecordingsFolder() {
+        let dir = storage.recordingsDirectory
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir.path)
+    }
+    
+    public func revealLastRecordingInFinder() {
+        guard let url = lastRecordedURL ?? storage.listRecordings().first else {
+            openRecordingsFolder()
+            return
         }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+    
+    public func openLastRecordingFile() {
+        guard let url = lastRecordedURL ?? storage.listRecordings().first else { return }
+        NSWorkspace.shared.open(url)
     }
 }
