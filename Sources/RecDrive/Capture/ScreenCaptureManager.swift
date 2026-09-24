@@ -152,16 +152,33 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         timer?.invalidate()
         timer = nil
         
-        // Stop ScreenCaptureKit stream first
+        // 1. Instantly stop microphone ingress
+        micEngine.stopCapture()
+        
+        // 2. Remove outputs and stop ScreenCaptureKit stream with a safety timeout
         if let scStream = stream {
-            try? await scStream.stopCapture()
+            try? scStream.removeStreamOutput(self, type: .screen)
+            try? scStream.removeStreamOutput(self, type: .audio)
+            
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try? await scStream.stopCapture()
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                }
+                _ = await group.next()
+                group.cancelAll()
+            }
             self.stream = nil
         }
         
-        // Stop Microphone Engine
-        micEngine.stopCapture()
+        defer {
+            self.mediaWriter = nil
+            self.recordingStartTime = nil
+        }
         
-        // Finalize MediaWriter
+        // 3. Finalize MediaWriter
         guard let writer = mediaWriter else {
             self.recordingState = .idle
             throw NSError(domain: "RecDrive.Capture", code: -2, userInfo: [NSLocalizedDescriptionKey: "Scrittura file non disponibile."])
@@ -169,14 +186,10 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         
         do {
             let outputURL = try await writer.finishWriting()
-            self.mediaWriter = nil
             self.recordingState = .idle
-            self.recordingStartTime = nil
             return outputURL
         } catch {
-            self.mediaWriter = nil
             self.recordingState = .failed(error.localizedDescription)
-            self.recordingStartTime = nil
             throw error
         }
     }
@@ -190,12 +203,12 @@ extension ScreenCaptureManager: SCStreamOutput, SCStreamDelegate {
         
         switch type {
         case .screen:
-            // Check frame status: drop frames that are not complete (e.g. idle, blank, suspended)
+            // Check frame status: accept both complete and idle frames (which keep video timebase aligned with audio during static screen)
             guard let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
                   let attachments = attachmentsArray.first,
                   let statusRaw = attachments[SCStreamFrameInfo.status] as? Int,
                   let status = SCFrameStatus(rawValue: statusRaw),
-                  status == .complete,
+                  (status == .complete || status == .idle),
                   CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
                 return
             }

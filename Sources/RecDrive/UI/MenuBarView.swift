@@ -73,7 +73,15 @@ struct MenuBarView: View {
             
             Spacer()
             
-            if appState.isRecording {
+            if appState.isFinishing {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("Salvataggio...")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundColor(.orange)
+                }
+            } else if appState.isRecording {
                 HStack(spacing: 6) {
                     Circle()
                         .fill(Color.red)
@@ -108,7 +116,7 @@ struct MenuBarView: View {
                     .font(.caption)
                 TextField("es. Algoritmi Lezione 1", text: $appState.lessonTitle)
                     .textFieldStyle(.plain)
-                    .disabled(appState.isRecording)
+                    .disabled(appState.isRecording || appState.isFinishing)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
@@ -126,6 +134,7 @@ struct MenuBarView: View {
     private var recordButtonSection: some View {
         Button {
             Task {
+                if appState.isFinishing { return }
                 if appState.isRecording {
                     await appState.stopRecording()
                 } else {
@@ -134,18 +143,26 @@ struct MenuBarView: View {
             }
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: appState.isRecording ? "stop.fill" : "record.circle.fill")
-                    .font(.system(size: 18))
-                Text(appState.isRecording ? "Ferma Registrazione" : "Avvia Registrazione")
-                    .font(.system(size: 14, weight: .semibold))
+                if appState.isFinishing {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Salvataggio in corso...")
+                        .font(.system(size: 14, weight: .semibold))
+                } else {
+                    Image(systemName: appState.isRecording ? "stop.fill" : "record.circle.fill")
+                        .font(.system(size: 18))
+                    Text(appState.isRecording ? "Ferma Registrazione" : "Avvia Registrazione")
+                        .font(.system(size: 14, weight: .semibold))
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .foregroundColor(.white)
-            .background(appState.isRecording ? Color.red : Color.accentColor)
+            .background(appState.isFinishing ? Color.gray : (appState.isRecording ? Color.red : Color.accentColor))
             .cornerRadius(8)
         }
         .buttonStyle(.plain)
+        .disabled(appState.isFinishing)
     }
     
     // MARK: - Source Selection
@@ -167,7 +184,7 @@ struct MenuBarView: View {
                 uiState.showingSourcePicker = true
             }
             .font(.caption)
-            .disabled(appState.isRecording)
+            .disabled(appState.isRecording || appState.isFinishing)
         }
         .padding(8)
         .background(Color.primary.opacity(0.04))
@@ -183,7 +200,7 @@ struct MenuBarView: View {
                     .font(.caption)
             }
             .toggleStyle(.checkbox)
-            .disabled(appState.isRecording)
+            .disabled(appState.isRecording || appState.isFinishing)
             
             Spacer()
             
@@ -192,7 +209,7 @@ struct MenuBarView: View {
                     .font(.caption)
             }
             .toggleStyle(.checkbox)
-            .disabled(appState.isRecording)
+            .disabled(appState.isRecording || appState.isFinishing)
         }
     }
     

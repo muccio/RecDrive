@@ -55,10 +55,10 @@ public final class MicrophoneEngine: @unchecked Sendable {
         defer { lock.unlock() }
         
         guard isRunning else { return }
+        onAudioSampleBuffer = nil
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         isRunning = false
-        onAudioSampleBuffer = nil
     }
     
     // MARK: - Buffer Conversion to CMSampleBuffer
@@ -87,10 +87,13 @@ public final class MicrophoneEngine: @unchecked Sendable {
         )
         guard status == noErr, let format = formatDesc else { return nil }
         
-        // Compute presentation timestamp
-        let hostTime = presentationTime.hostTime
-        let seconds = machTimeToSeconds(hostTime)
-        let pts = CMTime(seconds: seconds, preferredTimescale: CMTimeScale(pcmBuffer.format.sampleRate))
+        // Compute presentation timestamp aligned with CoreMedia host time clock
+        let pts: CMTime
+        if presentationTime.isHostTimeValid && presentationTime.hostTime > 0 {
+            pts = CMClockMakeHostTimeFromSystemUnits(presentationTime.hostTime)
+        } else {
+            pts = CMClockGetTime(CMClockGetHostTimeClock())
+        }
         
         var timingInfo = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: CMTimeScale(pcmBuffer.format.sampleRate)),

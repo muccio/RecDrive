@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import Dispatch
 import AVFoundation
 import CoreMedia
 import VideoToolbox
@@ -20,6 +21,8 @@ public final class MediaWriter: @unchecked Sendable {
     
     private var isSessionStarted = false
     private var sessionStartTime: CMTime = .invalid
+    private var latestPresentationTime: CMTime = .invalid
+    private var isFinalizing = false
     private var hasAppendedVideo = false
     private var hasAppendedAudio = false
     private var hasAppendedMic = false
@@ -44,6 +47,16 @@ public final class MediaWriter: @unchecked Sendable {
         self.hasMicrophoneAudio = hasMicrophoneAudio
     }
     
+    private func beginFinalization() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if isFinalizing && assetWriter?.status == .completed {
+            return false
+        }
+        self.isFinalizing = true
+        return true
+    }
+    
     // MARK: - Setup and Start
     
     public func startWriting() throws {
@@ -66,7 +79,7 @@ public final class MediaWriter: @unchecked Sendable {
             AVVideoAverageBitRateKey: bitrate,
             AVVideoExpectedSourceFrameRateKey: 60,
             AVVideoMaxKeyFrameIntervalKey: 60,
-            AVVideoAllowFrameReorderingKey: true
+            AVVideoAllowFrameReorderingKey: false
         ]
         
         if codec == .hevc {
@@ -127,6 +140,8 @@ public final class MediaWriter: @unchecked Sendable {
         self.assetWriter = writer
         self.isSessionStarted = false
         self.sessionStartTime = .invalid
+        self.latestPresentationTime = .invalid
+        self.isFinalizing = false
         self.hasAppendedVideo = false
         self.hasAppendedAudio = false
         self.hasAppendedMic = false
@@ -140,20 +155,39 @@ public final class MediaWriter: @unchecked Sendable {
             return
         }
         
+        lock.lock()
+        if isFinalizing {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        
         writerQueue.async { [weak self] in
             guard let self = self,
                   let writer = self.assetWriter,
                   let vInput = self.videoInput,
                   writer.status == .writing else { return }
             
-            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            guard pts.isValid else { return }
-            
             self.lock.lock()
+            if self.isFinalizing {
+                self.lock.unlock()
+                return
+            }
+            
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            guard pts.isValid else {
+                self.lock.unlock()
+                return
+            }
+            
             if !self.isSessionStarted {
                 writer.startSession(atSourceTime: pts)
                 self.sessionStartTime = pts
                 self.isSessionStarted = true
+            }
+            
+            if pts > self.latestPresentationTime || !self.latestPresentationTime.isValid {
+                self.latestPresentationTime = pts
             }
             self.lock.unlock()
             
@@ -176,18 +210,39 @@ public final class MediaWriter: @unchecked Sendable {
             return
         }
         
+        lock.lock()
+        if isFinalizing {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        
         writerQueue.async { [weak self] in
             guard let self = self,
                   let writer = self.assetWriter,
                   let aInput = self.systemAudioInput,
                   writer.status == .writing else { return }
             
-            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            guard pts.isValid else { return }
-            
             self.lock.lock()
+            if self.isFinalizing {
+                self.lock.unlock()
+                return
+            }
+            
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            guard pts.isValid else {
+                self.lock.unlock()
+                return
+            }
+            
             let started = self.isSessionStarted
             let startPts = self.sessionStartTime
+            
+            if started && pts >= startPts {
+                if pts > self.latestPresentationTime || !self.latestPresentationTime.isValid {
+                    self.latestPresentationTime = pts
+                }
+            }
             self.lock.unlock()
             
             guard started, pts >= startPts else { return }
@@ -207,18 +262,39 @@ public final class MediaWriter: @unchecked Sendable {
             return
         }
         
+        lock.lock()
+        if isFinalizing {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        
         writerQueue.async { [weak self] in
             guard let self = self,
                   let writer = self.assetWriter,
                   let micInput = self.microphoneAudioInput,
                   writer.status == .writing else { return }
             
-            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            guard pts.isValid else { return }
-            
             self.lock.lock()
+            if self.isFinalizing {
+                self.lock.unlock()
+                return
+            }
+            
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            guard pts.isValid else {
+                self.lock.unlock()
+                return
+            }
+            
             let started = self.isSessionStarted
             let startPts = self.sessionStartTime
+            
+            if started && pts >= startPts {
+                if pts > self.latestPresentationTime || !self.latestPresentationTime.isValid {
+                    self.latestPresentationTime = pts
+                }
+            }
             self.lock.unlock()
             
             guard started, pts >= startPts else { return }
@@ -235,47 +311,86 @@ public final class MediaWriter: @unchecked Sendable {
     // MARK: - Finalize Writing
     
     public func finishWriting() async throws -> URL {
+        if !beginFinalization() {
+            return outputURL
+        }
+        
         return try await withCheckedThrowingContinuation { continuation in
+            var hasResumed = false
+            let resumeLock = NSLock()
+            
+            let safeResume: (Result<URL, Error>) -> Void = { result in
+                resumeLock.lock()
+                defer { resumeLock.unlock() }
+                if !hasResumed {
+                    hasResumed = true
+                    continuation.resume(with: result)
+                }
+            }
+            
+            // Timeout watchdog (15 seconds) to prevent infinite UI hangs
+            let timeoutItem = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                print("[MediaWriter] finishWriting timeout (15s) reached! Cancelling writer.")
+                self.assetWriter?.cancelWriting()
+                safeResume(.failure(NSError(
+                    domain: "RecDrive.MediaWriter",
+                    code: -5,
+                    userInfo: [NSLocalizedDescriptionKey: "Il salvataggio del video ha superato il tempo limite."]
+                )))
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 15.0, execute: timeoutItem)
+            
             writerQueue.async { [weak self] in
                 guard let self = self, let writer = self.assetWriter else {
-                    continuation.resume(throwing: NSError(domain: "RecDrive.MediaWriter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Scrittura non attiva o già completata."]))
+                    timeoutItem.cancel()
+                    safeResume(.failure(NSError(domain: "RecDrive.MediaWriter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Scrittura non attiva o già completata."])))
                     return
                 }
                 
                 self.lock.lock()
                 let started = self.isSessionStarted
+                let startPts = self.sessionStartTime
+                let endPts = self.latestPresentationTime
                 self.lock.unlock()
                 
-                // If session never started, start at .zero to allow clean finalization
-                if !started && writer.status == .writing {
-                    writer.startSession(atSourceTime: .zero)
-                }
-                
                 if writer.status == .writing {
+                    // Explicitly end session at the maximum timestamp across all tracks
+                    if started {
+                        let finalEnd = (endPts.isValid && endPts >= startPts) ? endPts : CMClockGetTime(CMClockGetHostTimeClock())
+                        writer.endSession(atSourceTime: finalEnd)
+                    } else {
+                        writer.startSession(atSourceTime: .zero)
+                        writer.endSession(atSourceTime: .zero)
+                    }
+                    
                     self.videoInput?.markAsFinished()
                     self.systemAudioInput?.markAsFinished()
                     self.microphoneAudioInput?.markAsFinished()
                     
                     writer.finishWriting {
+                        timeoutItem.cancel()
                         if writer.status == .completed {
-                            continuation.resume(returning: self.outputURL)
+                            safeResume(.success(self.outputURL))
                         } else if let error = writer.error {
                             print("[MediaWriter] finishWriting failed with error: \(error)")
-                            continuation.resume(throwing: error)
+                            safeResume(.failure(error))
                         } else {
-                            continuation.resume(returning: self.outputURL)
+                            safeResume(.success(self.outputURL))
                         }
                     }
                 } else if writer.status == .completed {
-                    continuation.resume(returning: self.outputURL)
+                    timeoutItem.cancel()
+                    safeResume(.success(self.outputURL))
                 } else {
+                    timeoutItem.cancel()
                     let error = writer.error ?? NSError(
                         domain: "RecDrive.MediaWriter",
                         code: -4,
                         userInfo: [NSLocalizedDescriptionKey: "Stato finale AVAssetWriter non valido: \(writer.status.rawValue)"]
                     )
                     print("[MediaWriter] finishWriting unexpected state: \(writer.status.rawValue), error: \(error)")
-                    continuation.resume(throwing: error)
+                    safeResume(.failure(error))
                 }
             }
         }

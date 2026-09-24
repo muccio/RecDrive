@@ -19,6 +19,7 @@ public final class AppState: ObservableObject {
     @Published public var selectedTargetName: String = "Schermo Intero"
     @Published public var lessonTitle: String = ""
     @Published public var isRecording: Bool = false
+    @Published public var isFinishing: Bool = false
     @Published public var recordingDuration: TimeInterval = 0
     @Published public var statusMessage: String? = nil
     @Published public var lastRecordedURL: URL? = nil
@@ -62,7 +63,7 @@ public final class AppState: ObservableObject {
     // MARK: - Start Recording
     
     public func startRecording() async {
-        guard !isRecording else { return }
+        guard !isRecording && !isFinishing else { return }
         
         checkScreenCapturePermission()
         guard hasScreenCapturePermission else {
@@ -124,13 +125,18 @@ public final class AppState: ObservableObject {
     // MARK: - Stop Recording
     
     public func stopRecording() async {
-        guard isRecording else { return }
+        guard isRecording && !isFinishing else { return }
         
+        self.isFinishing = true
         durationTimer?.invalidate()
         durationTimer = nil
-        self.isRecording = false
         
         StatusItemController.shared.updateState(.stopping)
+        
+        defer {
+            self.isRecording = false
+            self.isFinishing = false
+        }
         
         do {
             let outputURL = try await captureManager.stopCapture()
