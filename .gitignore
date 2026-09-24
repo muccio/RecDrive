@@ -1,0 +1,6 @@
+.build/
+.DS_Store
+*.xcodeproj
+xcuserdata/
+/tmp/recdrive-build
+DerivedData/
