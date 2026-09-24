@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.recdrive.app</string>
+    <key>CFBundleName</key>
+    <string>RecDrive</string>
+    <key>CFBundleDisplayName</key>
+    <string>RecDrive</string>
+    <key>CFBundleExecutable</key>
+    <string>RecDrive</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <!-- LSUIElement: true ensures the app runs solely as a menu bar item without Dock icon -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>RecDrive needs screen recording permission to capture your display or selected application windows.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>RecDrive needs microphone access to record voice narration alongside screen captures.</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLName</key>
+            <string>com.recdrive.oauth</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>recdrive</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
