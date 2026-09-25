@@ -1,9 +1,16 @@
 import SwiftUI
 import AppKit
 
+@MainActor
+final class SettingsUIState: ObservableObject {
+    @Published var isRecordingShortcut: Bool = false
+    var keyMonitor: Any? = nil
+}
+
 /// Preferences and settings window for RecDrive.
 struct SettingsView: View {
     @ObservedObject var preferences = PreferencesStorage.shared
+    @StateObject private var uiState = SettingsUIState()
     
     var body: some View {
         TabView {
@@ -16,9 +23,17 @@ struct SettingsView: View {
                 .tabItem {
                     Label("Cattura & Audio", systemImage: "video")
                 }
+            
+            annotationTab
+                .tabItem {
+                    Label("Annotazione", systemImage: "pencil.and.outline")
+                }
         }
-        .frame(width: 480, height: 340)
+        .frame(width: 520, height: 400)
         .padding()
+        .onDisappear {
+            stopListeningForShortcut()
+        }
     }
     
     // MARK: - General Tab
@@ -119,5 +134,145 @@ struct SettingsView: View {
         if panel.runModal() == .OK, let selectedURL = panel.url {
             preferences.customRecordingsPath = selectedURL.path
         }
+    }
+    
+    // MARK: - Annotation Tab
+    
+    private var annotationTab: some View {
+        Form {
+            Section(header: Text("Scorciatoia Globale di Attivazione").font(.headline)) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Abilita scorciatoia globale per disegnare sullo schermo", isOn: $preferences.annotationHotKeyEnabled)
+                        .onChange(of: preferences.annotationHotKeyEnabled) { enabled in
+                            if enabled {
+                                HotKeyManager.shared.registerFromPreferences()
+                            } else {
+                                HotKeyManager.shared.unregisterAnnotationHotKey()
+                            }
+                        }
+                    
+                    HStack(spacing: 12) {
+                        Text("Scorciatoia:")
+                            .font(.subheadline)
+                        
+                        Text(uiState.isRecordingShortcut ? "Premi i tasti..." : preferences.annotationHotKeyDisplayString)
+                            .font(.system(size: 13, weight: .bold, design: .monospaced))
+                            .foregroundColor(uiState.isRecordingShortcut ? .orange : .primary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(uiState.isRecordingShortcut ? Color.orange.opacity(0.15) : Color.primary.opacity(0.06))
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(uiState.isRecordingShortcut ? Color.orange : Color.primary.opacity(0.12), lineWidth: 1)
+                            )
+                        
+                        if uiState.isRecordingShortcut {
+                            Button("Annulla") {
+                                stopListeningForShortcut()
+                            }
+                            .font(.caption)
+                        } else {
+                            Button("Registra nuova scorciatoia...") {
+                                startListeningForShortcut()
+                            }
+                            .font(.caption)
+                            .disabled(!preferences.annotationHotKeyEnabled)
+                            
+                            Button("Ripristina (⌘⇧D)") {
+                                resetDefaultShortcut()
+                            }
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        }
+                    }
+                    
+                    if uiState.isRecordingShortcut {
+                        Text("💡 Premi una combinazione con Command (⌘), Option (⌥) o Control (⌃) e un tasto (es. ⌃⌥D, ⌘⇧A). Premi Esc per annullare.")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    } else {
+                        Text("La scorciatoia funziona ovunque su macOS, anche durante la registrazione o con altre applicazioni aperte.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            
+            Section(header: Text("Comandi Rapidi durante il Disegno").font(.headline)) {
+                VStack(alignment: .leading, spacing: 6) {
+                    shortcutGuideRow(key: "Esc", desc: "Chiudi / Esci dalla modalità annotazione")
+                    shortcutGuideRow(key: "⌘ Z", desc: "Annulla ultimo tratto (Undo)")
+                    shortcutGuideRow(key: "C", desc: "Pulisci tutti i tratti disegnati")
+                    shortcutGuideRow(key: "P", desc: "Strumento Penna (tratto solido)")
+                    shortcutGuideRow(key: "H", desc: "Strumento Evidenziatore (tratto fluorescente)")
+                    shortcutGuideRow(key: "E", desc: "Strumento Gomma (rimuovi tratti)")
+                    shortcutGuideRow(key: "V", desc: "Strumento Cursore (interagisci con le finestre sottostanti)")
+                }
+            }
+        }
+        .padding()
+    }
+    
+    private func shortcutGuideRow(key: String, desc: String) -> some View {
+        HStack(spacing: 10) {
+            Text(key)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.primary.opacity(0.08))
+                .cornerRadius(4)
+                .frame(width: 44, alignment: .center)
+            Text(desc)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+    
+    // MARK: - Shortcut Recording
+    
+    private func startListeningForShortcut() {
+        stopListeningForShortcut()
+        uiState.isRecordingShortcut = true
+        
+        uiState.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Esc key cancels recording
+            if event.keyCode == 53 {
+                self.stopListeningForShortcut()
+                return nil
+            }
+            
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let hasModifiers = flags.contains(.command) || flags.contains(.option) || flags.contains(.control)
+            
+            if hasModifiers {
+                let carbonMods = HotKeyManager.carbonModifiers(from: flags)
+                let keyCode = Int(event.keyCode)
+                
+                preferences.annotationHotKeyKeyCode = keyCode
+                preferences.annotationHotKeyModifiers = carbonMods
+                HotKeyManager.shared.registerAnnotationHotKey(keyCode: keyCode, modifiers: carbonMods)
+                
+                self.stopListeningForShortcut()
+                return nil
+            }
+            return event
+        }
+    }
+    
+    private func stopListeningForShortcut() {
+        if let monitor = uiState.keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            uiState.keyMonitor = nil
+        }
+        uiState.isRecordingShortcut = false
+    }
+    
+    private func resetDefaultShortcut() {
+        stopListeningForShortcut()
+        preferences.annotationHotKeyKeyCode = 2 // kVK_ANSI_D
+        preferences.annotationHotKeyModifiers = 768 // cmdKey | shiftKey
+        preferences.annotationHotKeyEnabled = true
+        HotKeyManager.shared.registerFromPreferences()
     }
 }

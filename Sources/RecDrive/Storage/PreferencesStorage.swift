@@ -14,6 +14,9 @@ public final class PreferencesStorage: ObservableObject {
         static let captureMicrophone = "com.recdrive.captureMicrophone"
         static let customRecordingsPath = "com.recdrive.customRecordingsPath"
         static let lastLessonTitle = "com.recdrive.lastLessonTitle"
+        static let annotationHotKeyEnabled = "com.recdrive.annotationHotKeyEnabled"
+        static let annotationHotKeyKeyCode = "com.recdrive.annotationHotKeyKeyCode"
+        static let annotationHotKeyModifiers = "com.recdrive.annotationHotKeyModifiers"
     }
     
     @Published public var videoCodec: String {
@@ -40,6 +43,24 @@ public final class PreferencesStorage: ObservableObject {
         didSet { defaults.set(lastLessonTitle, forKey: Keys.lastLessonTitle) }
     }
     
+    @Published public var annotationHotKeyEnabled: Bool {
+        didSet { defaults.set(annotationHotKeyEnabled, forKey: Keys.annotationHotKeyEnabled) }
+    }
+    
+    @Published public var annotationHotKeyKeyCode: Int {
+        didSet { defaults.set(annotationHotKeyKeyCode, forKey: Keys.annotationHotKeyKeyCode) }
+    }
+    
+    @Published public var annotationHotKeyModifiers: UInt32 {
+        didSet { defaults.set(Int(annotationHotKeyModifiers), forKey: Keys.annotationHotKeyModifiers) }
+    }
+    
+    @MainActor
+    public var annotationHotKeyDisplayString: String {
+        guard annotationHotKeyEnabled else { return "Disabilitata" }
+        return HotKeyManager.displayString(keyCode: annotationHotKeyKeyCode, modifiers: annotationHotKeyModifiers)
+    }
+    
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         
@@ -49,6 +70,10 @@ public final class PreferencesStorage: ObservableObject {
         self.captureMicrophone = defaults.bool(forKey: Keys.captureMicrophone)
         self.customRecordingsPath = defaults.string(forKey: Keys.customRecordingsPath) ?? ""
         self.lastLessonTitle = defaults.string(forKey: Keys.lastLessonTitle) ?? ""
+        
+        self.annotationHotKeyEnabled = defaults.object(forKey: Keys.annotationHotKeyEnabled) as? Bool ?? true
+        self.annotationHotKeyKeyCode = defaults.object(forKey: Keys.annotationHotKeyKeyCode) as? Int ?? 2 // kVK_ANSI_D
+        self.annotationHotKeyModifiers = UInt32(defaults.object(forKey: Keys.annotationHotKeyModifiers) as? Int ?? 768) // cmdKey | shiftKey
     }
     
     public func resetDefaults() {
@@ -58,5 +83,8 @@ public final class PreferencesStorage: ObservableObject {
         captureMicrophone = false
         customRecordingsPath = ""
         lastLessonTitle = ""
+        annotationHotKeyEnabled = true
+        annotationHotKeyKeyCode = 2
+        annotationHotKeyModifiers = 768
     }
 }

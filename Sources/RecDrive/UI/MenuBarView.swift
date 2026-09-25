@@ -10,6 +10,7 @@ final class MenuBarUIState: ObservableObject {
 struct MenuBarView: View {
     @ObservedObject var appState = AppState.shared
     @ObservedObject var preferences = PreferencesStorage.shared
+    @ObservedObject var annotationManager = AnnotationManager.shared
     @StateObject private var uiState = MenuBarUIState()
     
     var body: some View {
@@ -24,6 +25,9 @@ struct MenuBarView: View {
             
             // Primary Recording Action
             recordButtonSection
+            
+            // Live Screen Annotation Quick Action
+            annotationSection
             
             Divider()
             
@@ -163,6 +167,47 @@ struct MenuBarView: View {
         }
         .buttonStyle(.plain)
         .disabled(appState.isFinishing)
+    }
+    
+    // MARK: - Annotation Quick Action
+    
+    private var annotationSection: some View {
+        Button {
+            annotationManager.toggleAnnotation()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: annotationManager.isAnnotationActive ? "pencil.slash" : "pencil.and.outline")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(annotationManager.isAnnotationActive ? .orange : .accentColor)
+                
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(annotationManager.isAnnotationActive ? "Ferma Annotazione" : "Disegna sullo Schermo")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.primary)
+                    Text(annotationManager.isAnnotationActive ? "Disegno a mano libera attivo" : "Scrivi o disegna a mano libera")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                Text(preferences.annotationHotKeyDisplayString)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.06))
+                    .cornerRadius(4)
+            }
+            .padding(8)
+            .background(annotationManager.isAnnotationActive ? Color.orange.opacity(0.12) : Color.primary.opacity(0.04))
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(annotationManager.isAnnotationActive ? Color.orange.opacity(0.3) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
     
     // MARK: - Source Selection

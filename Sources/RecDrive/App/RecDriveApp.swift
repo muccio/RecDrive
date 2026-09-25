@@ -23,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Initialize StatusItem and attach MenuBarView popover
         let menuBarView = MenuBarView()
         StatusItemController.shared.setupStatusItem(contentView: AnyView(menuBarView))
+        
+        // Initialize Global HotKey Manager for Screen Annotation
+        HotKeyManager.shared.registerFromPreferences()
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

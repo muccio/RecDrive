@@ -6,6 +6,9 @@
 
 ## ✨ Funzionalità Principali
 
+- **Disegno a Mano Libera sullo Schermo (Live Annotation)**: Disegna o scrivi a mano libera in qualsiasi punto dello schermo in tempo reale (visibile nelle registrazioni).
+- **Scorciatoia Globale Personalizzabile**: Attivabile/disattivabile dalla barra dei menu o con shortcut globale definibile dall'utente nelle impostazioni (predefinita: `⌘ ⇧ D`).
+- **Barra Strumenti HUD Fluttuante**: Penna solida, evidenziatore fluorescente, gomma vettoriale, selettore colori, spessori, Annulla (`⌘Z`), Pulisci (`C`) e modalità Cursore (interagisci con le finestre sottostanti mantenendo i disegni a schermo).
 - **Titolo Lezione Dinamico**: Campo dedicato per inserire il titolo della lezione o della registrazione. Il file salvato include automaticamente il titolo insieme a data e ora:
   `[TitoloLezione]_YYYY-MM-dd_HH-mm-ss.mp4` (es. `Algoritmi Lezione 1_2026-09-24_18-30-00.mp4`).
 - **Registrazione Affidabile a 60/30 FPS**: Frame filtering nativo ScreenCaptureKit per evitare file vuoti o danneggiati.
@@ -34,19 +37,27 @@ _SCREEN_CAPTURER/
 │       ├── App/
 │       │   ├── RecDriveApp.swift       # Entry point @main, NSApplicationDelegate, accessory policy
 │       │   └── AppState.swift          # Reactive state manager (@MainActor ObservableObject)
+│       ├── Annotation/
+│       │   ├── AnnotationManager.swift # Coordinatore overlay e ciclo di vita annotazione
+│       │   ├── AnnotationCanvasView.swift # Canvas trasparente, curve bezier, gomma e shortcut
+│       │   ├── AnnotationOverlayWindow.swift # Finestra overlay borderless a schermo intero
+│       │   ├── AnnotationToolbarPanel.swift # Pannello HUD fluttuante e trascinabile
+│       │   ├── AnnotationToolbarView.swift # Interfaccia SwiftUI con strumenti, palette e azioni
+│       │   ├── AnnotationModels.swift  # Modelli per strumenti, tratti e colori
+│       │   └── HotKeyManager.swift     # Gestore scorciatoie globali Carbon senza permessi AX
 │       ├── Capture/
 │       │   ├── ScreenCaptureManager.swift # Gestione SCStream e query SCShareableContent
 │       │   ├── MediaWriter.swift       # Encoding hardware HEVC/H.264 & AAC con AVAssetWriter
 │       │   ├── MicrophoneEngine.swift  # Acquisizione microfono esterno via AVAudioEngine
 │       │   └── CaptureModels.swift     # Modelli per Display, Window e metriche di cattura
 │       ├── Storage/
-│       │   ├── PreferencesStorage.swift# Persistenza opzioni con UserDefaults
+│       │   ├── PreferencesStorage.swift# Persistenza opzioni e scorciatoie con UserDefaults
 │       │   └── LocalStorageManager.swift# Gestione file disco locale e denominazione lezioni
 │       └── UI/
 │           ├── MenuBarView.swift       # Popover SwiftUI principale per la Menu Bar
 │           ├── StatusItemController.swift # Gestione dinamica NSStatusItem con animazioni
 │           ├── SourcePickerView.swift  # Selettore visivo di Schermi e Singole Finestre
-│           └── SettingsView.swift      # Finestra impostazioni (Cartella di salvataggio, Codec)
+│           └── SettingsView.swift      # Finestra impostazioni (Cartella, Codec, Scorciatoie)
 ```
 
 ---
