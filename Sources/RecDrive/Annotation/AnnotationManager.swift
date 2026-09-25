@@ -99,6 +99,20 @@ public final class AnnotationManager: ObservableObject {
         }
     }
     
+    public func openTextBoxAtMouseLocation() {
+        guard isAnnotationActive else { return }
+        currentTool = .text
+        let mouseLocation = NSEvent.mouseLocation
+        for window in overlayWindows {
+            if window.frame.contains(mouseLocation) {
+                window.makeKeyAndOrderFront(nil)
+                window.canvasView.openTextBoxAtCurrentMousePosition()
+                return
+            }
+        }
+        overlayWindows.first?.canvasView.openTextBoxAtCurrentMousePosition()
+    }
+    
     // MARK: - Pass-through Updates
     
     private func updateToolPassThrough() {

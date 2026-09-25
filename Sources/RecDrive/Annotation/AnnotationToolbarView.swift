@@ -66,7 +66,12 @@ public struct AnnotationToolbarView: View {
             HStack(spacing: 3) {
                 ForEach(AnnotationTool.allCases) { tool in
                     Button {
-                        manager.currentTool = tool
+                        if tool == .text {
+                            manager.currentTool = .text
+                            manager.openTextBoxAtMouseLocation()
+                        } else {
+                            manager.currentTool = tool
+                        }
                     } label: {
                         Image(systemName: tool.systemImage)
                             .font(.system(size: 13, weight: .medium))
@@ -78,7 +83,7 @@ public struct AnnotationToolbarView: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(tool.title)
+                    .help(tool == .text ? "Testo (T)" : tool.title)
                 }
             }
             .padding(.horizontal, 4)

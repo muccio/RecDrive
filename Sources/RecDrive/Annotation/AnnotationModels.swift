@@ -5,6 +5,7 @@ public enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
     case pointer      // Pass-through cursor to interact with apps beneath
     case pen          // Freehand solid opaque pen
     case highlighter  // Translucent highlighter
+    case text         // On-screen text box
     case eraser       // Stroke eraser
     
     public var id: String { rawValue }
@@ -14,6 +15,7 @@ public enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
         case .pointer: return "Cursore"
         case .pen: return "Penna"
         case .highlighter: return "Evidenziatore"
+        case .text: return "Testo"
         case .eraser: return "Gomma"
         }
     }
@@ -23,6 +25,7 @@ public enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
         case .pointer: return "cursorarrow"
         case .pen: return "pencil.tip"
         case .highlighter: return "highlighter"
+        case .text: return "textformat"
         case .eraser: return "eraser.fill"
         }
     }
@@ -97,6 +100,54 @@ public final class AnnotationStroke: Identifiable {
             color.setStroke()
         }
         path.stroke()
+        context.restoreGState()
+    }
+}
+
+/// Model representing a committed text annotation on the screen canvas.
+public final class AnnotationText: Identifiable {
+    public let id: UUID
+    public var text: String
+    public var origin: CGPoint
+    public var color: NSColor
+    public var fontSize: CGFloat
+    
+    public init(
+        id: UUID = UUID(),
+        text: String,
+        origin: CGPoint,
+        color: NSColor,
+        fontSize: CGFloat = 26.0
+    ) {
+        self.id = id
+        self.text = text
+        self.origin = origin
+        self.color = color
+        self.fontSize = fontSize
+    }
+    
+    public var font: NSFont {
+        NSFont.systemFont(ofSize: fontSize, weight: .bold)
+    }
+    
+    public var boundingBox: CGRect {
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let size = (text as NSString).size(withAttributes: attributes)
+        return CGRect(origin: origin, size: CGSize(width: size.width + 12, height: size.height + 8))
+    }
+    
+    public func contains(point: CGPoint, threshold: CGFloat) -> Bool {
+        return boundingBox.insetBy(dx: -threshold, dy: -threshold).contains(point)
+    }
+    
+    public func draw(in context: CGContext) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: color
+        ]
+        context.saveGState()
+        context.setShadow(offset: CGSize(width: 0, height: -1), blur: 3, color: NSColor.black.withAlphaComponent(0.6).cgColor)
+        (text as NSString).draw(at: origin, withAttributes: attributes)
         context.restoreGState()
     }
 }

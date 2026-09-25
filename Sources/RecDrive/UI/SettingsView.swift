@@ -206,7 +206,8 @@ struct SettingsView: View {
                     shortcutGuideRow(key: "C", desc: "Pulisci tutti i tratti disegnati")
                     shortcutGuideRow(key: "P", desc: "Strumento Penna (tratto solido)")
                     shortcutGuideRow(key: "H", desc: "Strumento Evidenziatore (tratto fluorescente)")
-                    shortcutGuideRow(key: "E", desc: "Strumento Gomma (rimuovi tratti)")
+                    shortcutGuideRow(key: "T", desc: "Strumento Testo (apri casella di testo sul puntatore)")
+                    shortcutGuideRow(key: "E", desc: "Strumento Gomma (rimuovi tratti e testo)")
                     shortcutGuideRow(key: "V", desc: "Strumento Cursore (interagisci con le finestre sottostanti)")
                 }
             }

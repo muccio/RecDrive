@@ -6,9 +6,10 @@
 
 ## ✨ Funzionalità Principali
 
-- **Disegno a Mano Libera sullo Schermo (Live Annotation)**: Disegna o scrivi a mano libera in qualsiasi punto dello schermo in tempo reale (visibile nelle registrazioni).
+- **Disegno e Testo sullo Schermo (Live Annotation)**: Disegna a mano libera o inserisci caselle di testo in qualsiasi punto dello schermo in tempo reale (visibile nelle registrazioni).
+- **Strumento Testo Dinamico (`T`)**: Premendo `T` (o selezionando lo strumento Testo nella barra HUD), si apre all'istante una casella di testo nel punto esatto del puntatore mouse per inserire annotazioni con dimensionamento automatico, ombreggiatura ad alto contrasto e supporto completo ad Annulla (`⌘Z`) e gomma.
 - **Scorciatoia Globale Personalizzabile**: Attivabile/disattivabile dalla barra dei menu o con shortcut globale definibile dall'utente nelle impostazioni (predefinita: `⌘ ⇧ D`).
-- **Barra Strumenti HUD Fluttuante**: Penna solida, evidenziatore fluorescente, gomma vettoriale, selettore colori, spessori, Annulla (`⌘Z`), Pulisci (`C`) e modalità Cursore (interagisci con le finestre sottostanti mantenendo i disegni a schermo).
+- **Barra Strumenti HUD Fluttuante**: Penna solida, evidenziatore fluorescente, strumento testo (`T`), gomma vettoriale, selettore colori, spessori, Annulla (`⌘Z`), Pulisci (`C`) e modalità Cursore (interagisci con le finestre sottostanti mantenendo i disegni a schermo).
 - **Titolo Lezione Dinamico**: Campo dedicato per inserire il titolo della lezione o della registrazione. Il file salvato include automaticamente il titolo insieme a data e ora:
   `[TitoloLezione]_YYYY-MM-dd_HH-mm-ss.mp4` (es. `Algoritmi Lezione 1_2026-09-24_18-30-00.mp4`).
 - **Registrazione Affidabile a 60/30 FPS**: Frame filtering nativo ScreenCaptureKit per evitare file vuoti o danneggiati.
