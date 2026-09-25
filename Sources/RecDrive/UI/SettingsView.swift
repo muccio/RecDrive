@@ -40,6 +40,37 @@ struct SettingsView: View {
     
     private var generalTab: some View {
         Form {
+            Section {
+                HStack(spacing: 14) {
+                    if let appIcon = NSApp.applicationIconImage ?? NSImage(named: NSImage.applicationIconName) {
+                        Image(nsImage: appIcon)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 44, height: 44)
+                            .shadow(color: .black.opacity(0.15), radius: 4, x: 0, y: 2)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("RecDrive")
+                                .font(.title3)
+                                .fontWeight(.bold)
+                            Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.0")")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.12))
+                                .cornerRadius(4)
+                        }
+                        Text("Registratore schermo e annotazione live con sincronizzazione cloud")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            
             Section(header: Text("Cartella di Salvataggio").font(.headline)) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("I video registrati verranno salvati in:")

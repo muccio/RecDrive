@@ -31,6 +31,7 @@ _SCREEN_CAPTURER/
 ├── scripts/
 │   └── bundle_app.sh                   # Script di compilazione e packaging in RecDrive.app
 ├── Resources/
+│   ├── AppIcon.icns                    # Icona applicativa macOS multi-risoluzione
 │   ├── Info.plist                      # LSUIElement = true, usage descriptions permessi
 │   └── RecDrive.entitlements           # Entitlements di sicurezza (Mic, Movies)
 ├── Sources/

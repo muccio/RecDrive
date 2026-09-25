@@ -68,10 +68,17 @@ struct MenuBarView: View {
     // MARK: - Header
     
     private var headerView: some View {
-        HStack {
-            Image(systemName: "record.circle")
-                .foregroundColor(.red)
-                .font(.system(size: 16, weight: .bold))
+        HStack(spacing: 8) {
+            if let icon = NSApp.applicationIconImage ?? NSImage(named: NSImage.applicationIconName) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+            } else {
+                Image(systemName: "record.circle")
+                    .foregroundColor(.red)
+                    .font(.system(size: 16, weight: .bold))
+            }
             Text("RecDrive")
                 .font(.headline)
             

@@ -31,6 +31,14 @@ chmod +x "${MACOS_DIR}/RecDrive"
 # Copy Info.plist and Entitlements
 cp "${PROJECT_DIR}/Resources/Info.plist" "${CONTENTS_DIR}/Info.plist"
 
+# Copy AppIcon.icns
+if [ -f "${PROJECT_DIR}/Resources/AppIcon.icns" ]; then
+    cp "${PROJECT_DIR}/Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
+fi
+if [ -f "${PROJECT_DIR}/Resources/AppIcon.png" ]; then
+    cp "${PROJECT_DIR}/Resources/AppIcon.png" "${RESOURCES_DIR}/AppIcon.png"
+fi
+
 # Ad-hoc codesign with entitlements and stable designated requirement
 echo "==> Applying codesign with entitlements and designated requirement..."
 codesign --force --deep --sign - -r='designated => identifier "com.recdrive.app"' --entitlements "${PROJECT_DIR}/Resources/RecDrive.entitlements" "${APP_DIR}"
