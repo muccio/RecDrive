@@ -1,0 +1,1 @@
+../../../iPadCompanion/MacBridge/iPadBridgeServer.swift

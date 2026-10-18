@@ -1,0 +1,1 @@
+../../../iPadCompanion/SharedProtocol/CompanionProtocol.swift

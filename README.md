@@ -18,6 +18,7 @@
 - **Accesso Rapido Post-Registrazione**: Pulsanti dedicati per "Mostra nel Finder" e "Apri video" subito dopo aver fermato la registrazione.
 - **Selettore Sorgenti**: Cattura dell'intero schermo o di singole finestre applicative.
 - **Audio Flessibile**: Cattura combinata o selettiva di Audio di Sistema e Microfono esterno.
+- **Companion App iPad (Apple Pencil & Mirroring)**: Connessione peer-to-peer automatica (Bonjour `_recdrive-pad._tcp`) per visualizzare lo schermo in tempo reale su iPad e disegnare con Apple Pencil con feedback locale a latenza zero.
 
 ---
 
@@ -30,6 +31,10 @@ _SCREEN_CAPTURER/
 ├── Package.swift                       # Definizione Swift Package Manager (macOS 13+)
 ├── scripts/
 │   └── bundle_app.sh                   # Script di compilazione e packaging in RecDrive.app
+├── iPadCompanion/                      # Companion App iPadOS e Bridge Server Mac
+│   ├── SharedProtocol/                 # Protocollo TCP binario [5-byte header] e modelli
+│   ├── MacBridge/                      # ScreenCaptureKit JPEG streamer e adapter tratti
+│   └── RecDrivePadApp/                 # App nativa iPadOS (SwiftUI + Apple Pencil 120Hz)
 ├── Resources/
 │   ├── AppIcon.icns                    # Icona applicativa macOS multi-risoluzione
 │   ├── Info.plist                      # LSUIElement = true, usage descriptions permessi

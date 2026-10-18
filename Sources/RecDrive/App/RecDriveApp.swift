@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Initialize Global HotKey Manager for Screen Annotation
         HotKeyManager.shared.registerFromPreferences()
+        
+        // Start iPad Companion Server Bridge (Bonjour _recdrive-pad._tcp)
+        iPadBridgeServer.shared.start()
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
