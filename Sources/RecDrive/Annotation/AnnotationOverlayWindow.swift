@@ -29,8 +29,9 @@ public final class AnnotationOverlayWindow: NSWindow {
     public override var canBecomeMain: Bool { false }
     
     public func updateMouseEventsPassThrough(isPointer: Bool) {
-        self.ignoresMouseEvents = isPointer
-        if isPointer {
+        let shouldPassThrough = isPointer && !AnnotationManager.shared.isWhiteboardActive
+        self.ignoresMouseEvents = shouldPassThrough
+        if shouldPassThrough {
             self.orderBack(nil)
         } else {
             self.makeKeyAndOrderFront(nil)

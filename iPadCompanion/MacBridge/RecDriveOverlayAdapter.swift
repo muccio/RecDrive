@@ -21,6 +21,23 @@ public final class RecDriveOverlayAdapter {
         case .undo:
             AnnotationManager.shared.undo()
             return
+        case .setWhiteboard:
+            if !AnnotationManager.shared.isAnnotationActive {
+                AnnotationManager.shared.startAnnotation()
+            }
+            if let active = event.whiteboardActive {
+                AnnotationManager.shared.isWhiteboardActive = active
+            }
+            if let spacing = event.whiteboardGridSpacing {
+                if spacing <= 0 {
+                    AnnotationManager.shared.isWhiteboardGridEnabled = false
+                } else {
+                    AnnotationManager.shared.isWhiteboardGridEnabled = true
+                    AnnotationManager.shared.whiteboardGridSpacing = CGFloat(spacing)
+                }
+            }
+            AnnotationManager.shared.refreshOverlays()
+            return
         case .began, .moved, .ended, .cancelled:
             break
         }
@@ -36,9 +53,15 @@ public final class RecDriveOverlayAdapter {
             return
         }
         
-        // 3. Configure tool parameters (pen, eraser, color, width)
-        if event.isEraser {
+        // 3. Configure tool parameters (pen, staff, eraser, color, width)
+        if event.isEraser || event.toolName == "eraser" {
             AnnotationManager.shared.currentTool = .eraser
+        } else if event.toolName == "staff" {
+            AnnotationManager.shared.currentTool = .staff
+            if let color = NSColor(hexString: event.colorHex) {
+                AnnotationManager.shared.currentColor = color
+            }
+            AnnotationManager.shared.currentStrokeWidth = CGFloat(event.lineWidth)
         } else {
             AnnotationManager.shared.currentTool = .pen
             if let color = NSColor(hexString: event.colorHex) {

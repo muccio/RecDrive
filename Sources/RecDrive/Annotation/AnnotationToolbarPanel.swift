@@ -5,7 +5,7 @@ import SwiftUI
 /// Always floats above the canvas overlay window.
 public final class AnnotationToolbarPanel: NSPanel {
     public init(screen: NSScreen) {
-        let panelWidth: CGFloat = 500
+        let panelWidth: CGFloat = 660
         let panelHeight: CGFloat = 48
         
         let x = screen.frame.origin.x + (screen.frame.width - panelWidth) / 2.0

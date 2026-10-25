@@ -83,7 +83,81 @@ public struct AnnotationToolbarView: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(tool == .text ? "Testo (T)" : tool.title)
+                    .help(toolHelpText(for: tool))
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(Color.primary.opacity(0.05))
+            .cornerRadius(8)
+            
+            Divider()
+                .frame(height: 20)
+            
+            // 2. Whiteboard ("Lavagna") Controls
+            HStack(spacing: 4) {
+                Button {
+                    manager.toggleWhiteboard()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: manager.isWhiteboardActive ? "rectangle.inset.filled" : "rectangle")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Lavagna")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 28)
+                    .foregroundColor(manager.isWhiteboardActive ? .white : .primary)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(manager.isWhiteboardActive ? Color.accentColor : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(manager.isWhiteboardActive ? "Disattiva lavagna (L)" : "Attiva lavagna a schermo intero (L)")
+                
+                if manager.isWhiteboardActive {
+                    // Grid Toggle
+                    Button {
+                        manager.toggleWhiteboardGrid()
+                    } label: {
+                        Image(systemName: "square.grid.3x3")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(manager.isWhiteboardGridEnabled ? .white : .primary)
+                            .frame(width: 28, height: 28)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(manager.isWhiteboardGridEnabled ? Color.indigo : Color.clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(manager.isWhiteboardGridEnabled ? "Griglia attiva (G)" : "Attiva griglia quadrettata (G)")
+                    
+                    if manager.isWhiteboardGridEnabled {
+                        // Spaziatura quadretti (Menu con preset + step)
+                        Menu {
+                            Button("Quadretti 20px (Sottili)") { manager.setWhiteboardGridSpacing(20) }
+                            Button("Quadretti 30px") { manager.setWhiteboardGridSpacing(30) }
+                            Button("Quadretti 40px (Standard quaderno)") { manager.setWhiteboardGridSpacing(40) }
+                            Button("Quadretti 50px") { manager.setWhiteboardGridSpacing(50) }
+                            Button("Quadretti 60px (Grandi)") { manager.setWhiteboardGridSpacing(60) }
+                            Button("Quadretti 80px (Extra grandi)") { manager.setWhiteboardGridSpacing(80) }
+                            Divider()
+                            Button("Aumenta (+10px)") { manager.stepGridSpacing(delta: 10) }
+                            Button("Diminuisci (-10px)") { manager.stepGridSpacing(delta: -10) }
+                        } label: {
+                            Text("\(Int(manager.whiteboardGridSpacing))px")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(.primary)
+                                .padding(.horizontal, 5)
+                                .frame(height: 24)
+                                .background(Color.primary.opacity(0.08))
+                                .cornerRadius(5)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .frame(width: 48)
+                        .help("Dimensione griglia quadrettata")
+                    }
                 }
             }
             .padding(.horizontal, 4)
@@ -196,5 +270,18 @@ public struct AnnotationToolbarView: View {
                 .foregroundColor(.secondary)
         }
         .padding(.horizontal, 6)
+    }
+    
+    // MARK: - Helpers
+    
+    private func toolHelpText(for tool: AnnotationTool) -> String {
+        switch tool {
+        case .pointer: return "Cursore (V)"
+        case .pen: return "Penna (P)"
+        case .highlighter: return "Evidenziatore (H)"
+        case .staff: return "Pentagramma (M)"
+        case .text: return "Testo (T)"
+        case .eraser: return "Gomma (E)"
+        }
     }
 }

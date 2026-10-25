@@ -16,6 +16,7 @@ public enum PencilPhase: String, Codable {
     case cancelled
     case clearAll
     case undo
+    case setWhiteboard
 }
 
 /// Normalized drawing event sent from the iPad to the Mac overlay.
@@ -27,6 +28,9 @@ public struct PencilDrawEvent: Codable {
     public let lineWidth: Double
     public let colorHex: String      // es. "#FF3B30"
     public let isEraser: Bool
+    public let toolName: String?     // es. "pen", "staff", "eraser"
+    public let whiteboardActive: Bool?
+    public let whiteboardGridSpacing: Double?
     
     public init(
         phase: PencilPhase,
@@ -35,7 +39,10 @@ public struct PencilDrawEvent: Codable {
         force: Double = 1.0,
         lineWidth: Double = 6.0,
         colorHex: String = "#FF3B30",
-        isEraser: Bool = false
+        isEraser: Bool = false,
+        toolName: String? = nil,
+        whiteboardActive: Bool? = nil,
+        whiteboardGridSpacing: Double? = nil
     ) {
         self.phase = phase
         self.normalizedX = normalizedX
@@ -44,6 +51,9 @@ public struct PencilDrawEvent: Codable {
         self.lineWidth = lineWidth
         self.colorHex = colorHex
         self.isEraser = isEraser
+        self.toolName = toolName
+        self.whiteboardActive = whiteboardActive
+        self.whiteboardGridSpacing = whiteboardGridSpacing
     }
 }
 

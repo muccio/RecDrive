@@ -6,6 +6,7 @@ import UIKit
 /// and normalized event dispatching to the Mac.
 public final class PencilTouchUIView: UIView {
     public var onPencilEvent: ((PencilDrawEvent) -> Void)?
+    public var activeTool: String = "pen" // "pen", "staff", "eraser"
     public var currentColorHex: String = "#FF3B30"
     public var currentLineWidth: Double = 6.0
     public var isEraser: Bool = false
@@ -14,6 +15,10 @@ public final class PencilTouchUIView: UIView {
     private var activePath = UIBezierPath()
     private var previousPoint: CGPoint = .zero
     private let drawingLayer = CAShapeLayer()
+    
+    // Musical staff ("Pentagramma") Apple Pencil state
+    private var staffStartPoint: CGPoint = .zero
+    private var isDrawingStaff: Bool = false
     
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -51,6 +56,14 @@ public final class PencilTouchUIView: UIView {
         let location = touch.location(in: self)
         previousPoint = location
         
+        if activeTool == "staff" {
+            staffStartPoint = location
+            isDrawingStaff = true
+            updateStaffLayer(start: location, end: location)
+            dispatch(phase: .began, touch: touch, location: location)
+            return
+        }
+        
         // Start local rendering layer for immediate Apple Pencil visual feedback
         activePath.removeAllPoints()
         activePath.move(to: location)
@@ -64,6 +77,14 @@ public final class PencilTouchUIView: UIView {
     public override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
         if !allowFingerDrawing && touch.type != .pencil { return }
+        
+        if activeTool == "staff" {
+            let lastTouch = event?.coalescedTouches(for: touch)?.last ?? touch
+            let currentLocation = lastTouch.location(in: self)
+            updateStaffLayer(start: staffStartPoint, end: currentLocation)
+            dispatch(phase: .moved, touch: lastTouch, location: currentLocation)
+            return
+        }
         
         // Process coalesced touches for maximal 120Hz/240Hz Apple Pencil sampling precision
         let coalescedTouches = event?.coalescedTouches(for: touch) ?? [touch]
@@ -89,6 +110,17 @@ public final class PencilTouchUIView: UIView {
         if !allowFingerDrawing && touch.type != .pencil { return }
         
         let location = touch.location(in: self)
+        
+        if activeTool == "staff" {
+            isDrawingStaff = false
+            dispatch(phase: .ended, touch: touch, location: location)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.activePath.removeAllPoints()
+                self?.drawingLayer.path = nil
+            }
+            return
+        }
+        
         activePath.addLine(to: location)
         drawingLayer.path = activePath.cgPath
         
@@ -106,6 +138,7 @@ public final class PencilTouchUIView: UIView {
         if !allowFingerDrawing && touch.type != .pencil { return }
         
         let location = touch.location(in: self)
+        isDrawingStaff = false
         dispatch(phase: .cancelled, touch: touch, location: location)
         
         activePath.removeAllPoints()
@@ -122,6 +155,7 @@ public final class PencilTouchUIView: UIView {
         let maxForce = touch.maximumPossibleForce > 0 ? touch.maximumPossibleForce : 1.0
         let force = Double(touch.force / maxForce)
         
+        let isEraserActive = (activeTool == "eraser" || isEraser)
         let event = PencilDrawEvent(
             phase: phase,
             normalizedX: normalizedX,
@@ -129,9 +163,57 @@ public final class PencilTouchUIView: UIView {
             force: max(0.1, min(1.0, force)),
             lineWidth: currentLineWidth,
             colorHex: currentColorHex,
-            isEraser: isEraser
+            isEraser: isEraserActive,
+            toolName: activeTool
         )
         onPencilEvent?(event)
+    }
+    
+    private func updateStaffLayer(start: CGPoint, end: CGPoint) {
+        let leftX = min(start.x, end.x)
+        let rightX = max(start.x, end.x)
+        let width = rightX - leftX
+        guard width > 10 else {
+            drawingLayer.path = nil
+            return
+        }
+        
+        let rawHeight = abs(end.y - start.y)
+        let topY: CGFloat
+        let staffHeight: CGFloat
+        
+        if rawHeight < 20 {
+            staffHeight = 44.0
+            topY = start.y - (staffHeight / 2.0)
+        } else {
+            topY = min(start.y, end.y)
+            staffHeight = rawHeight
+        }
+        
+        let spacing = staffHeight / 4.0
+        let bottomY = topY + staffHeight
+        
+        let path = UIBezierPath()
+        
+        // 5 horizontal staff lines
+        for i in 0..<5 {
+            let y = topY + CGFloat(i) * spacing
+            path.move(to: CGPoint(x: leftX, y: y))
+            path.addLine(to: CGPoint(x: rightX, y: y))
+        }
+        
+        // Left barline
+        path.move(to: CGPoint(x: leftX, y: topY))
+        path.addLine(to: CGPoint(x: leftX, y: bottomY))
+        
+        // Right barline
+        path.move(to: CGPoint(x: rightX, y: topY))
+        path.addLine(to: CGPoint(x: rightX, y: bottomY))
+        
+        let uiColor = UIColor(hexString: currentColorHex) ?? .systemRed
+        drawingLayer.strokeColor = uiColor.cgColor
+        drawingLayer.lineWidth = CGFloat(max(1.5, min(currentLineWidth, 3.5)))
+        drawingLayer.path = path.cgPath
     }
     
     private func updateLayerProperties() {
@@ -148,6 +230,7 @@ public final class PencilTouchUIView: UIView {
 
 /// SwiftUI wrapper for PencilTouchUIView.
 public struct PencilCanvasView: UIViewRepresentable {
+    @Binding public var activeTool: String
     @Binding public var currentColorHex: String
     @Binding public var currentLineWidth: Double
     @Binding public var isEraser: Bool
@@ -155,12 +238,14 @@ public struct PencilCanvasView: UIViewRepresentable {
     public var onPencilEvent: (PencilDrawEvent) -> Void
     
     public init(
+        activeTool: Binding<String>,
         currentColorHex: Binding<String>,
         currentLineWidth: Binding<Double>,
         isEraser: Binding<Bool>,
         allowFingerDrawing: Bool = false,
         onPencilEvent: @escaping (PencilDrawEvent) -> Void
     ) {
+        self._activeTool = activeTool
         self._currentColorHex = currentColorHex
         self._currentLineWidth = currentLineWidth
         self._isEraser = isEraser
@@ -170,6 +255,7 @@ public struct PencilCanvasView: UIViewRepresentable {
     
     public func makeUIView(context: Context) -> PencilTouchUIView {
         let view = PencilTouchUIView()
+        view.activeTool = activeTool
         view.currentColorHex = currentColorHex
         view.currentLineWidth = currentLineWidth
         view.isEraser = isEraser
@@ -179,6 +265,7 @@ public struct PencilCanvasView: UIViewRepresentable {
     }
     
     public func updateUIView(_ uiView: PencilTouchUIView, context: Context) {
+        uiView.activeTool = activeTool
         uiView.currentColorHex = currentColorHex
         uiView.currentLineWidth = currentLineWidth
         uiView.isEraser = isEraser

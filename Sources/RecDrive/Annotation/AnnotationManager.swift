@@ -20,6 +20,25 @@ public final class AnnotationManager: ObservableObject {
     @Published public var currentStrokeWidth: CGFloat = 6.0
     @Published public var isToolbarCollapsed: Bool = false
     
+    // MARK: - Whiteboard ("Lavagna") Subsystem
+    @Published public var isWhiteboardActive: Bool = false {
+        didSet {
+            handleWhiteboardStateChange()
+        }
+    }
+    
+    @Published public var isWhiteboardGridEnabled: Bool = false {
+        didSet {
+            refreshOverlays()
+        }
+    }
+    
+    @Published public var whiteboardGridSpacing: CGFloat = 40.0 {
+        didSet {
+            refreshOverlays()
+        }
+    }
+    
     private var overlayWindows: [AnnotationOverlayWindow] = []
     private var toolbarPanel: AnnotationToolbarPanel?
     
@@ -65,6 +84,8 @@ public final class AnnotationManager: ObservableObject {
         guard isAnnotationActive else { return }
         
         self.isAnnotationActive = false
+        self.isWhiteboardActive = false
+        self.isWhiteboardGridEnabled = false
         
         // Dismiss toolbar panel
         toolbarPanel?.orderOut(nil)
@@ -111,6 +132,48 @@ public final class AnnotationManager: ObservableObject {
             }
         }
         overlayWindows.first?.canvasView.openTextBoxAtCurrentMousePosition()
+    }
+    
+    // MARK: - Whiteboard Actions & Updates
+    
+    public func toggleWhiteboard() {
+        isWhiteboardActive.toggle()
+    }
+    
+    public func toggleWhiteboardGrid() {
+        if !isWhiteboardActive {
+            isWhiteboardActive = true
+            isWhiteboardGridEnabled = true
+        } else {
+            isWhiteboardGridEnabled.toggle()
+        }
+        refreshOverlays()
+    }
+    
+    public func setWhiteboardGridSpacing(_ spacing: CGFloat) {
+        whiteboardGridSpacing = max(15.0, min(120.0, spacing))
+    }
+    
+    public func stepGridSpacing(delta: CGFloat) {
+        let newSpacing = max(15.0, min(120.0, whiteboardGridSpacing + delta))
+        whiteboardGridSpacing = newSpacing
+    }
+    
+    public func refreshOverlays() {
+        for window in overlayWindows {
+            window.updateMouseEventsPassThrough(isPointer: currentTool == .pointer)
+            window.canvasView.setNeedsDisplay(window.canvasView.bounds)
+        }
+    }
+    
+    private func handleWhiteboardStateChange() {
+        if isWhiteboardActive {
+            // When switching to whiteboard, if current color is white, switch to black for readability
+            if currentColor == .white {
+                currentColor = .black
+            }
+        }
+        refreshOverlays()
     }
     
     // MARK: - Pass-through Updates

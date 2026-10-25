@@ -55,7 +55,7 @@ struct SettingsView: View {
                             Text("RecDrive")
                                 .font(.title3)
                                 .fontWeight(.bold)
-                            Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.4.1")")
+                            Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0")")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .padding(.horizontal, 6)

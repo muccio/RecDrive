@@ -8,11 +8,17 @@ public struct MirrorWorkspaceView: View {
     @ObservedObject var network = MacConnectionClient.shared
     @Environment(\.scenePhase) private var scenePhase
     
+    @State private var activeTool: String = "pen" // "pen", "staff", "eraser"
     @State private var currentColorHex: String = "#FF3B30"
     @State private var currentLineWidth: Double = 6.0
     @State private var isEraser: Bool = false
     @State private var allowFingerDrawing: Bool = false
     @State private var isHUDVisible: Bool = true
+    
+    // Whiteboard ("Lavagna") state
+    @State private var isWhiteboardActive: Bool = false
+    @State private var isWhiteboardGridEnabled: Bool = false
+    @State private var whiteboardGridSpacing: Double = 40.0
     
     @State private var showingManualIPAlert: Bool = false
     @State private var manualIPText: String = ""
@@ -50,6 +56,7 @@ public struct MirrorWorkspaceView: View {
                         
                         // 2. 1:1 Pixel-Matched Apple Pencil Drawing Canvas
                         PencilCanvasView(
+                            activeTool: $activeTool,
                             currentColorHex: $currentColorHex,
                             currentLineWidth: $currentLineWidth,
                             isEraser: $isEraser,
@@ -101,6 +108,18 @@ public struct MirrorWorkspaceView: View {
         } message: {
             Text("Inserisci l'indirizzo IP locale del tuo Mac per stabilire una connessione diretta:")
         }
+    }
+    
+    // MARK: - Whiteboard Synchronization
+    
+    private func sendWhiteboardUpdate() {
+        let event = PencilDrawEvent(
+            phase: .setWhiteboard,
+            toolName: activeTool,
+            whiteboardActive: isWhiteboardActive,
+            whiteboardGridSpacing: isWhiteboardGridEnabled ? whiteboardGridSpacing : 0.0
+        )
+        network.sendPencilEvent(event)
     }
     
     // MARK: - Aspect-Fit Math
@@ -212,24 +231,134 @@ public struct MirrorWorkspaceView: View {
                 .frame(height: 20)
                 .background(Color.white.opacity(0.2))
             
-            // Tools: Pen vs Eraser
+            // Tools: Pen vs Staff vs Eraser
             HStack(spacing: 6) {
-                Button(action: { isEraser = false }) {
+                // Pen
+                Button(action: {
+                    activeTool = "pen"
+                    isEraser = false
+                }) {
                     Image(systemName: "pencil.tip")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(!isEraser ? .white : .white.opacity(0.4))
+                        .foregroundColor(activeTool == "pen" ? .white : .white.opacity(0.4))
                         .frame(width: 32, height: 32)
-                        .background(!isEraser ? Color.red : Color.clear)
+                        .background(activeTool == "pen" ? Color.red : Color.clear)
                         .clipShape(Circle())
                 }
                 
-                Button(action: { isEraser = true }) {
+                // Pentagramma
+                Button(action: {
+                    activeTool = "staff"
+                    isEraser = false
+                    if isWhiteboardActive && currentColorHex == "#FFFFFF" {
+                        currentColorHex = "#000000"
+                    }
+                }) {
+                    Image(systemName: "music.note.list")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(activeTool == "staff" ? .white : .white.opacity(0.4))
+                        .frame(width: 32, height: 32)
+                        .background(activeTool == "staff" ? Color.purple : Color.clear)
+                        .clipShape(Circle())
+                }
+                
+                // Eraser
+                Button(action: {
+                    activeTool = "eraser"
+                    isEraser = true
+                }) {
                     Image(systemName: "eraser.fill")
                         .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(isEraser ? .white : .white.opacity(0.4))
+                        .foregroundColor(activeTool == "eraser" ? .white : .white.opacity(0.4))
                         .frame(width: 32, height: 32)
-                        .background(isEraser ? Color.white.opacity(0.3) : Color.clear)
+                        .background(activeTool == "eraser" ? Color.white.opacity(0.3) : Color.clear)
                         .clipShape(Circle())
+                }
+            }
+            
+            Divider()
+                .frame(height: 20)
+                .background(Color.white.opacity(0.2))
+            
+            // Whiteboard ("Lavagna") Controls
+            HStack(spacing: 6) {
+                Button(action: {
+                    isWhiteboardActive.toggle()
+                    if isWhiteboardActive && currentColorHex == "#FFFFFF" {
+                        currentColorHex = "#000000"
+                    }
+                    sendWhiteboardUpdate()
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: isWhiteboardActive ? "rectangle.inset.filled" : "rectangle")
+                            .font(.system(size: 14, weight: .bold))
+                        Text("Lavagna")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
+                    .background(isWhiteboardActive ? Color.blue : Color.white.opacity(0.12))
+                    .foregroundColor(.white)
+                    .cornerRadius(16)
+                }
+                
+                if isWhiteboardActive {
+                    Menu {
+                        Button(action: {
+                            isWhiteboardGridEnabled = false
+                            sendWhiteboardUpdate()
+                        }) {
+                            Label("Bianco puro", systemImage: !isWhiteboardGridEnabled ? "checkmark" : "")
+                        }
+                        
+                        Divider()
+                        
+                        Button(action: {
+                            isWhiteboardGridEnabled = true
+                            whiteboardGridSpacing = 25.0
+                            sendWhiteboardUpdate()
+                        }) {
+                            Label("Quadretti 25px (Piccoli)", systemImage: (isWhiteboardGridEnabled && whiteboardGridSpacing == 25.0) ? "checkmark" : "")
+                        }
+                        
+                        Button(action: {
+                            isWhiteboardGridEnabled = true
+                            whiteboardGridSpacing = 40.0
+                            sendWhiteboardUpdate()
+                        }) {
+                            Label("Quadretti 40px (Medi)", systemImage: (isWhiteboardGridEnabled && whiteboardGridSpacing == 40.0) ? "checkmark" : "")
+                        }
+                        
+                        Button(action: {
+                            isWhiteboardGridEnabled = true
+                            whiteboardGridSpacing = 60.0
+                            sendWhiteboardUpdate()
+                        }) {
+                            Label("Quadretti 60px (Grandi)", systemImage: (isWhiteboardGridEnabled && whiteboardGridSpacing == 60.0) ? "checkmark" : "")
+                        }
+                        
+                        Button(action: {
+                            isWhiteboardGridEnabled = true
+                            whiteboardGridSpacing = 80.0
+                            sendWhiteboardUpdate()
+                        }) {
+                            Label("Quadretti 80px (Extra)", systemImage: (isWhiteboardGridEnabled && whiteboardGridSpacing == 80.0) ? "checkmark" : "")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.grid.3x3")
+                                .font(.system(size: 14, weight: .bold))
+                            if isWhiteboardGridEnabled {
+                                Text("\(Int(whiteboardGridSpacing))px")
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                        }
+                        .padding(.horizontal, 9)
+                        .frame(height: 32)
+                        .background(isWhiteboardGridEnabled ? Color.indigo : Color.white.opacity(0.12))
+                        .foregroundColor(.white)
+                        .cornerRadius(16)
+                    }
                 }
             }
             

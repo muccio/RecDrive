@@ -5,6 +5,7 @@ public enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
     case pointer      // Pass-through cursor to interact with apps beneath
     case pen          // Freehand solid opaque pen
     case highlighter  // Translucent highlighter
+    case staff        // Musical staff (pentagramma a 5 linee)
     case text         // On-screen text box
     case eraser       // Stroke eraser
     
@@ -15,6 +16,7 @@ public enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
         case .pointer: return "Cursore"
         case .pen: return "Penna"
         case .highlighter: return "Evidenziatore"
+        case .staff: return "Pentagramma"
         case .text: return "Testo"
         case .eraser: return "Gomma"
         }
@@ -25,6 +27,7 @@ public enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
         case .pointer: return "cursorarrow"
         case .pen: return "pencil.tip"
         case .highlighter: return "highlighter"
+        case .staff: return "music.note.list"
         case .text: return "textformat"
         case .eraser: return "eraser.fill"
         }

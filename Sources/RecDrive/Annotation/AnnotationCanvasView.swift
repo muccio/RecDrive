@@ -16,6 +16,11 @@ public final class AnnotationCanvasView: NSView, NSTextFieldDelegate {
     private var currentStroke: AnnotationStroke?
     private var previousPoint: CGPoint = .zero
     
+    // Active musical staff ("Pentagramma") drawing state
+    private var staffStartPoint: CGPoint = .zero
+    private var staffCurrentPoint: CGPoint = .zero
+    private var isDrawingStaff: Bool = false
+    
     private var undoStack: [CanvasHistoryState] = []
     private var redoStack: [CanvasHistoryState] = []
     
@@ -45,6 +50,40 @@ public final class AnnotationCanvasView: NSView, NSTextFieldDelegate {
         
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         
+        // 0. Render Whiteboard background and optional grid
+        if AnnotationManager.shared.isWhiteboardActive {
+            context.saveGState()
+            context.setFillColor(NSColor.white.cgColor)
+            context.fill(bounds)
+            
+            if AnnotationManager.shared.isWhiteboardGridEnabled {
+                let spacing = max(10.0, AnnotationManager.shared.whiteboardGridSpacing)
+                // Subtle school notebook grid lines
+                let gridColor = NSColor(red: 0.82, green: 0.88, blue: 0.94, alpha: 0.85)
+                context.setStrokeColor(gridColor.cgColor)
+                context.setLineWidth(1.0)
+                
+                var x = spacing
+                while x < bounds.width {
+                    let rx = round(x) + 0.5
+                    context.move(to: CGPoint(x: rx, y: 0))
+                    context.addLine(to: CGPoint(x: rx, y: bounds.height))
+                    x += spacing
+                }
+                
+                var y = spacing
+                while y < bounds.height {
+                    let ry = round(y) + 0.5
+                    context.move(to: CGPoint(x: 0, y: ry))
+                    context.addLine(to: CGPoint(x: bounds.width, y: ry))
+                    y += spacing
+                }
+                
+                context.strokePath()
+            }
+            context.restoreGState()
+        }
+        
         // 1. Render all committed strokes
         for stroke in strokes {
             stroke.draw(in: context)
@@ -57,6 +96,11 @@ public final class AnnotationCanvasView: NSView, NSTextFieldDelegate {
         
         // 3. Render active stroke currently being drawn
         currentStroke?.draw(in: context)
+        
+        // 4. Render active staff preview currently being drawn
+        if isDrawingStaff {
+            drawStaffPreview(in: context)
+        }
     }
     
     // MARK: - Mouse Event Handling
@@ -84,6 +128,14 @@ public final class AnnotationCanvasView: NSView, NSTextFieldDelegate {
         
         if tool == .eraser {
             eraseItems(near: point)
+            return
+        }
+        
+        if tool == .staff {
+            staffStartPoint = point
+            staffCurrentPoint = point
+            isDrawingStaff = true
+            setNeedsDisplay(bounds)
             return
         }
         
@@ -116,6 +168,14 @@ public final class AnnotationCanvasView: NSView, NSTextFieldDelegate {
             return
         }
         
+        if tool == .staff {
+            if isDrawingStaff {
+                staffCurrentPoint = currentPoint
+                setNeedsDisplay(bounds)
+            }
+            return
+        }
+        
         guard let stroke = currentStroke else { return }
         
         // Smooth curve interpolation using quadratic bezier midpoint
@@ -136,6 +196,19 @@ public final class AnnotationCanvasView: NSView, NSTextFieldDelegate {
         guard tool != .pointer, tool != .text else { return }
         
         if tool == .eraser {
+            return
+        }
+        
+        if tool == .staff {
+            if isDrawingStaff {
+                isDrawingStaff = false
+                staffCurrentPoint = convert(event.locationInWindow, from: nil)
+                if let staffStroke = makeStaffStroke(from: staffStartPoint, to: staffCurrentPoint) {
+                    saveSnapshot()
+                    strokes.append(staffStroke)
+                }
+                setNeedsDisplay(bounds)
+            }
             return
         }
         
@@ -299,12 +372,86 @@ public final class AnnotationCanvasView: NSView, NSTextFieldDelegate {
     
     public func clearAll() {
         commitActiveTextBox()
-        guard !strokes.isEmpty || !texts.isEmpty || currentStroke != nil else { return }
+        guard !strokes.isEmpty || !texts.isEmpty || currentStroke != nil || isDrawingStaff else { return }
         saveSnapshot()
         strokes.removeAll()
         texts.removeAll()
         currentStroke = nil
+        isDrawingStaff = false
         setNeedsDisplay(bounds)
+    }
+    
+    // MARK: - Musical Staff (Pentagramma) Construction
+    
+    private func makeStaffStroke(from start: CGPoint, to end: CGPoint) -> AnnotationStroke? {
+        let leftX = min(start.x, end.x)
+        let rightX = max(start.x, end.x)
+        let width = rightX - leftX
+        guard width > 15 else { return nil }
+        
+        let rawHeight = abs(end.y - start.y)
+        let topY: CGFloat
+        let staffHeight: CGFloat
+        
+        if rawHeight < 24 {
+            // Horizontal swipe: create standard 48pt staff centered on start.y
+            staffHeight = 48.0
+            topY = start.y - (staffHeight / 2.0)
+        } else {
+            topY = min(start.y, end.y)
+            staffHeight = rawHeight
+        }
+        
+        let bottomY = topY + staffHeight
+        let spacing = staffHeight / 4.0
+        
+        let path = NSBezierPath()
+        var points: [CGPoint] = []
+        
+        // 5 horizontal staff lines
+        for i in 0..<5 {
+            let lineY = topY + CGFloat(i) * spacing
+            path.move(to: CGPoint(x: leftX, y: lineY))
+            path.line(to: CGPoint(x: rightX, y: lineY))
+            
+            // Populate sample points for hit testing (eraser)
+            var px = leftX
+            while px <= rightX {
+                points.append(CGPoint(x: px, y: lineY))
+                px += 25.0
+            }
+            points.append(CGPoint(x: rightX, y: lineY))
+        }
+        
+        // Left vertical barline (stanghetta iniziale)
+        path.move(to: CGPoint(x: leftX, y: topY))
+        path.line(to: CGPoint(x: leftX, y: bottomY))
+        points.append(CGPoint(x: leftX, y: (topY + bottomY) / 2.0))
+        
+        // Right vertical barline (stanghetta finale)
+        path.move(to: CGPoint(x: rightX, y: topY))
+        path.line(to: CGPoint(x: rightX, y: bottomY))
+        points.append(CGPoint(x: rightX, y: (topY + bottomY) / 2.0))
+        
+        var color = AnnotationManager.shared.currentColor
+        if AnnotationManager.shared.isWhiteboardActive && (color == .white || color == NSColor.white) {
+            color = .black
+        }
+        
+        let strokeWidth = max(1.5, min(AnnotationManager.shared.currentStrokeWidth, 4.0))
+        
+        return AnnotationStroke(
+            path: path,
+            points: points,
+            color: color,
+            width: strokeWidth,
+            isHighlighter: false
+        )
+    }
+    
+    private func drawStaffPreview(in context: CGContext) {
+        guard let stroke = makeStaffStroke(from: staffStartPoint, to: staffCurrentPoint) else { return }
+        stroke.draw(in: context)
     }
     
     // MARK: - Cursors
@@ -313,7 +460,7 @@ public final class AnnotationCanvasView: NSView, NSTextFieldDelegate {
         super.resetCursorRects()
         let cursor: NSCursor
         switch AnnotationManager.shared.currentTool {
-        case .pen, .highlighter:
+        case .pen, .highlighter, .staff:
             cursor = .crosshair
         case .text:
             cursor = .iBeam
@@ -361,6 +508,15 @@ public final class AnnotationCanvasView: NSView, NSTextFieldDelegate {
         case "h":
             commitActiveTextBox()
             AnnotationManager.shared.currentTool = .highlighter
+        case "m":
+            commitActiveTextBox()
+            AnnotationManager.shared.currentTool = .staff
+        case "l", "w":
+            commitActiveTextBox()
+            AnnotationManager.shared.toggleWhiteboard()
+        case "g":
+            commitActiveTextBox()
+            AnnotationManager.shared.toggleWhiteboardGrid()
         case "e":
             commitActiveTextBox()
             AnnotationManager.shared.currentTool = .eraser
