@@ -5,6 +5,7 @@ import CoreGraphics
 public enum CompanionMessageType: UInt8 {
     case videoFrame = 0x01
     case pencilEvent = 0x02
+    case heartbeat = 0x03
 }
 
 /// Lifecycle phases for drawing actions originating from iPad / Apple Pencil.

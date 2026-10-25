@@ -21,7 +21,53 @@ public final class MacConnectionClient: ObservableObject {
     private var receiveBuffer = Data()
     private let queue = DispatchQueue(label: "com.recdrive.pad.network", qos: .userInteractive)
     
-    private init() {}
+    private var lastDiscoveredEndpoint: NWEndpoint?
+    private var lastFrameReceivedTime: Date?
+    private var heartbeatTimer: Timer?
+    private var reconnectTask: Task<Void, Never>?
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    private var isAppActive: Bool = true
+    
+    private init() {
+        startHeartbeatMonitor()
+    }
+    
+    // MARK: - App Lifecycle Handlers
+    
+    public func handleAppDidEnterBackground() {
+        isAppActive = false
+        // Request background execution time from iOS to allow socket to stay connected briefly or pause cleanly
+        if backgroundTaskID == .invalid {
+            backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "com.recdrive.pad.keepalive") { [weak self] in
+                self?.endBackgroundTask()
+            }
+        }
+    }
+    
+    public func handleAppDidBecomeActive() {
+        isAppActive = true
+        endBackgroundTask()
+        
+        // When returning to foreground, check connection health immediately
+        if !isConnected || connection == nil {
+            print("[MacConnectionClient] App active: not connected, restarting discovery...")
+            restartBrowsing()
+        } else if let lastTime = lastFrameReceivedTime, Date().timeIntervalSince(lastTime) > 3.0 {
+            // If connection exists but video stream stalled while in background, trigger reconnect
+            print("[MacConnectionClient] App active: video stream stalled (>3s), reconnecting...")
+            reconnect()
+        } else {
+            // Send immediate heartbeat probe to verify socket is alive
+            sendHeartbeat()
+        }
+    }
+    
+    private func endBackgroundTask() {
+        if backgroundTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTaskID)
+            backgroundTaskID = .invalid
+        }
+    }
     
     // MARK: - Bonjour Discovery & Connection
     
@@ -40,8 +86,11 @@ public final class MacConnectionClient: ObservableObject {
         newBrowser.browseResultsChangedHandler = { [weak self] results, _ in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                if !self.isConnected, let firstResult = results.first {
-                    self.connect(to: firstResult.endpoint)
+                if let firstResult = results.first {
+                    self.lastDiscoveredEndpoint = firstResult.endpoint
+                    if !self.isConnected && self.connection == nil {
+                        self.connect(to: firstResult.endpoint)
+                    }
                 }
             }
         }
@@ -51,7 +100,7 @@ public final class MacConnectionClient: ObservableObject {
                 guard let self = self else { return }
                 switch state {
                 case .ready:
-                    self.connectionStatus = "Ricerca RecDrive Mac attiva..."
+                    self.connectionStatus = self.isConnected ? "Connesso al Mac" : "Ricerca RecDrive Mac attiva..."
                 case .failed(let error):
                     let errorDesc = error.localizedDescription
                     if errorDesc.contains("-65555") || errorDesc.contains("NoAuth") {
@@ -60,7 +109,9 @@ public final class MacConnectionClient: ObservableObject {
                         self.connectionStatus = "Errore ricerca: \(errorDesc)"
                     }
                 case .cancelled:
-                    self.connectionStatus = "Ricerca interrotta"
+                    if !self.isConnected {
+                        self.connectionStatus = "Ricerca interrotta"
+                    }
                 default:
                     break
                 }
@@ -89,6 +140,7 @@ public final class MacConnectionClient: ObservableObject {
         browser = nil
         
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(cleanHost), port: targetPort)
+        self.lastDiscoveredEndpoint = endpoint
         connect(to: endpoint)
     }
     
@@ -97,9 +149,17 @@ public final class MacConnectionClient: ObservableObject {
         // Avoid duplicate concurrent connection attempts
         guard connection == nil else { return }
         
+        self.lastDiscoveredEndpoint = endpoint
         connectionStatus = "Connessione in corso..."
         
-        let parameters = NWParameters.tcp
+        let tcpOptions = NWProtocolTCP.Options()
+        tcpOptions.enableKeepalive = true
+        tcpOptions.keepaliveIdle = 2
+        tcpOptions.keepaliveInterval = 2
+        tcpOptions.keepaliveCount = 3
+        tcpOptions.noDelay = true
+        
+        let parameters = NWParameters(tls: nil, tcp: tcpOptions)
         parameters.includePeerToPeer = true
         parameters.serviceClass = .interactiveVideo
         
@@ -113,8 +173,10 @@ public final class MacConnectionClient: ObservableObject {
                     self.isConnected = true
                     self.discoveredEndpointName = endpoint.debugDescription
                     self.connectionStatus = "Connesso al Mac"
+                    self.lastFrameReceivedTime = Date()
                     self.receiveBuffer.removeAll()
                     self.receiveNextChunk(from: conn)
+                    self.sendHeartbeat()
                 case .failed(let error):
                     self.handleDisconnection(error: error.localizedDescription)
                 case .cancelled:
@@ -131,12 +193,27 @@ public final class MacConnectionClient: ObservableObject {
         self.connection = newConnection
     }
     
-    /// Disconnects from current Mac and resumes browsing.
-    public func disconnect() {
+    /// Reconnects to the last known endpoint or restarts discovery.
+    public func reconnect() {
         connection?.cancel()
         connection = nil
         isConnected = false
-        currentFrame = nil
+        receiveBuffer.removeAll()
+        
+        if let endpoint = lastDiscoveredEndpoint {
+            connect(to: endpoint)
+        } else {
+            restartBrowsing()
+        }
+    }
+    
+    /// Disconnects from current Mac and resumes browsing.
+    public func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        connection?.cancel()
+        connection = nil
+        isConnected = false
         connectionStatus = "Disconnesso"
     }
     
@@ -172,8 +249,17 @@ public final class MacConnectionClient: ObservableObject {
         case .videoFrame:
             if let image = UIImage(data: packet.payload) {
                 Task { @MainActor in
+                    self.lastFrameReceivedTime = Date()
                     self.currentFrame = image
+                    if !self.isConnected {
+                        self.isConnected = true
+                        self.connectionStatus = "Connesso al Mac"
+                    }
                 }
+            }
+        case .heartbeat:
+            Task { @MainActor in
+                self.lastFrameReceivedTime = Date()
             }
         case .pencilEvent:
             break
@@ -183,13 +269,55 @@ public final class MacConnectionClient: ObservableObject {
     private func handleDisconnection(error: String?) {
         connection = nil
         isConnected = false
-        currentFrame = nil
         receiveBuffer.removeAll()
         
         if let error = error {
             connectionStatus = "Disconnesso: \(error)"
         } else {
-            connectionStatus = "Connessione chiusa"
+            connectionStatus = "Riconnessione al Mac..."
+        }
+        
+        // Auto-reconnect if app is in foreground
+        scheduleAutoReconnect()
+    }
+    
+    private func scheduleAutoReconnect() {
+        guard isAppActive else { return }
+        reconnectTask?.cancel()
+        reconnectTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled, !self.isConnected, self.connection == nil else { return }
+            print("[MacConnectionClient] Auto-reconnecting...")
+            self.reconnect()
+        }
+    }
+    
+    // MARK: - Heartbeat & Keepalive Monitor
+    
+    private func startHeartbeatMonitor() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                guard self.isConnected && self.connection != nil else { return }
+                
+                // If connected but no video frame or heartbeat received for > 5 seconds, stream is dead
+                if let lastFrame = self.lastFrameReceivedTime, Date().timeIntervalSince(lastFrame) > 5.0 {
+                    print("[MacConnectionClient] Watchdog: Stream dead (>5s without frames). Triggering reconnect.")
+                    self.reconnect()
+                    return
+                }
+                
+                self.sendHeartbeat()
+            }
+        }
+    }
+    
+    private func sendHeartbeat() {
+        guard isConnected, let connection = connection else { return }
+        queue.async {
+            let packet = CompanionPacket.pack(type: .heartbeat, payload: Data())
+            connection.send(content: packet, completion: .idempotent)
         }
     }
     

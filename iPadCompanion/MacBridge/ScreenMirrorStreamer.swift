@@ -4,6 +4,23 @@ import CoreImage
 import CoreMedia
 import AVFoundation
 
+private final class CachedFrameHolder: @unchecked Sendable {
+    private var data: Data?
+    private let lock = NSLock()
+    
+    func set(_ newData: Data) {
+        lock.lock()
+        data = newData
+        lock.unlock()
+    }
+    
+    func get() -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+}
+
 /// Background screen capture streamer using ScreenCaptureKit.
 /// Captures the active display at a downscaled resolution (max 1280px width) at 30 fps,
 /// converts raw frames to compressed JPEG buffers via CIContext (quality 0.65),
@@ -14,7 +31,10 @@ public final class ScreenMirrorStreamer: NSObject, SCStreamOutput, SCStreamDeleg
     
     private var stream: SCStream?
     private var isStreaming = false
+    private var isStopping = false
     private let streamQueue = DispatchQueue(label: "com.recdrive.mirror.stream", qos: .userInteractive)
+    
+    private let frameHolder = CachedFrameHolder()
     
     private let ciContext = CIContext(options: [
         .useSoftwareRenderer: false,
@@ -30,9 +50,25 @@ public final class ScreenMirrorStreamer: NSObject, SCStreamOutput, SCStreamDeleg
     
     /// Starts the ScreenCaptureKit mirror stream for the active screen.
     public func startStreaming() {
-        guard !isStreaming else { return }
+        // Immediately send cached frame to the client so iPad sees the screen with zero delay
+        if let cached = frameHolder.get() {
+            iPadBridgeServer.shared.sendVideoFrame(cached)
+        }
         
-        Task {
+        if isStreaming && stream != nil {
+            return
+        }
+        
+        guard !isStopping else {
+            // If previous stream is currently stopping, wait briefly and retry
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.startStreaming()
+            }
+            return
+        }
+        
+        Task { [weak self] in
+            guard let self = self else { return }
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 
@@ -77,8 +113,12 @@ public final class ScreenMirrorStreamer: NSObject, SCStreamOutput, SCStreamDeleg
                 self.isStreaming = true
                 print("[ScreenMirrorStreamer] Mirroring active: \(finalWidth)x\(finalHeight) @ 30 FPS")
             } catch {
-                print("[ScreenMirrorStreamer] Failed to start mirroring: \(error)")
+                print("[ScreenMirrorStreamer] Failed to start mirroring: \(error), will retry in 1s...")
                 self.isStreaming = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    guard let self = self, iPadBridgeServer.shared.isClientConnected else { return }
+                    self.startStreaming()
+                }
             }
         }
     }
@@ -90,6 +130,7 @@ public final class ScreenMirrorStreamer: NSObject, SCStreamOutput, SCStreamDeleg
         
         if let activeStream = self.stream {
             self.stream = nil
+            self.isStopping = true
             Task {
                 do {
                     try await activeStream.stopCapture()
@@ -97,6 +138,7 @@ public final class ScreenMirrorStreamer: NSObject, SCStreamOutput, SCStreamDeleg
                 } catch {
                     print("[ScreenMirrorStreamer] Error stopping stream: \(error)")
                 }
+                self.isStopping = false
             }
         }
     }
@@ -114,6 +156,7 @@ public final class ScreenMirrorStreamer: NSObject, SCStreamOutput, SCStreamDeleg
             options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.65]
         ) else { return }
         
+        frameHolder.set(jpegData)
         iPadBridgeServer.shared.sendVideoFrame(jpegData)
     }
     

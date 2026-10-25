@@ -15,6 +15,7 @@ public final class iPadBridgeServer: @unchecked Sendable {
     
     // Backpressure lock to drop lagging video frames and keep mirroring latency near zero
     private var isSendingFrame = false
+    private var lastSendStartTime = Date.distantPast
     private let sendLock = NSLock()
     
     public var onClientConnected: (@Sendable () -> Void)?
@@ -32,7 +33,14 @@ public final class iPadBridgeServer: @unchecked Sendable {
         guard !isRunning else { return }
         
         do {
-            let parameters = NWParameters.tcp
+            let tcpOptions = NWProtocolTCP.Options()
+            tcpOptions.enableKeepalive = true
+            tcpOptions.keepaliveIdle = 2
+            tcpOptions.keepaliveInterval = 2
+            tcpOptions.keepaliveCount = 3
+            tcpOptions.noDelay = true
+            
+            let parameters = NWParameters(tls: nil, tcp: tcpOptions)
             parameters.includePeerToPeer = true
             parameters.serviceClass = .interactiveVideo
             
@@ -69,6 +77,10 @@ public final class iPadBridgeServer: @unchecked Sendable {
         guard isRunning else { return }
         isRunning = false
         
+        sendLock.lock()
+        isSendingFrame = false
+        sendLock.unlock()
+        
         activeConnection?.cancel()
         activeConnection = nil
         isClientConnected = false
@@ -87,11 +99,16 @@ public final class iPadBridgeServer: @unchecked Sendable {
         guard isClientConnected, let connection = activeConnection else { return }
         
         sendLock.lock()
+        let now = Date()
         if isSendingFrame {
-            sendLock.unlock()
-            return
+            // Auto-recover if completion block was lost or connection stalled (> 0.5s)
+            if now.timeIntervalSince(lastSendStartTime) < 0.5 {
+                sendLock.unlock()
+                return
+            }
         }
         isSendingFrame = true
+        lastSendStartTime = now
         sendLock.unlock()
         
         let packet = CompanionPacket.pack(type: .videoFrame, payload: jpegData)
@@ -119,6 +136,10 @@ public final class iPadBridgeServer: @unchecked Sendable {
                 self.activeConnection = nil
             }
             
+            self.sendLock.lock()
+            self.isSendingFrame = false
+            self.sendLock.unlock()
+            
             self.activeConnection = connection
             
             connection.stateUpdateHandler = { [weak self, weak connection] state in
@@ -128,6 +149,9 @@ public final class iPadBridgeServer: @unchecked Sendable {
                     print("[iPadBridgeServer] iPad client connected: \(connection.endpoint)")
                     self.isClientConnected = true
                     self.receiveBuffer.removeAll()
+                    self.sendLock.lock()
+                    self.isSendingFrame = false
+                    self.sendLock.unlock()
                     self.onClientConnected?()
                     Task { @MainActor in
                         ScreenMirrorStreamer.shared.startStreaming()
@@ -154,7 +178,7 @@ public final class iPadBridgeServer: @unchecked Sendable {
             if let data = data, !data.isEmpty {
                 self.receiveBuffer.append(data)
                 while let packet = CompanionPacket.unpack(from: &self.receiveBuffer) {
-                    self.processPacket(packet)
+                    self.processPacket(packet, connection: connection)
                 }
             }
             
@@ -167,7 +191,7 @@ public final class iPadBridgeServer: @unchecked Sendable {
         }
     }
     
-    private func processPacket(_ packet: (type: CompanionMessageType, payload: Data)) {
+    private func processPacket(_ packet: (type: CompanionMessageType, payload: Data), connection: NWConnection) {
         switch packet.type {
         case .pencilEvent:
             do {
@@ -178,6 +202,10 @@ public final class iPadBridgeServer: @unchecked Sendable {
             } catch {
                 print("[iPadBridgeServer] Failed to decode pencil event: \(error)")
             }
+        case .heartbeat:
+            // Echo heartbeat back to confirm bidirectional channel health
+            let response = CompanionPacket.pack(type: .heartbeat, payload: Data())
+            connection.send(content: response, completion: .idempotent)
         case .videoFrame:
             break
         }
@@ -188,6 +216,11 @@ public final class iPadBridgeServer: @unchecked Sendable {
         activeConnection = nil
         isClientConnected = false
         receiveBuffer.removeAll()
+        
+        sendLock.lock()
+        isSendingFrame = false
+        sendLock.unlock()
+        
         print("[iPadBridgeServer] iPad client disconnected")
         
         onClientDisconnected?()

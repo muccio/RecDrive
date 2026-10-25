@@ -24,6 +24,7 @@ targets:
       - path: App
       - path: Networking
       - path: Views
+      - path: Assets.xcassets
       - path: ../SharedProtocol
     info:
       path: Info.plist

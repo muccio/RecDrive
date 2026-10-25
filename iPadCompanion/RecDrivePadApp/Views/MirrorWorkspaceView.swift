@@ -6,6 +6,7 @@ import SwiftUI
 /// Hosts the compact floating HUD toolbar for live drawing and Apple Pencil control.
 public struct MirrorWorkspaceView: View {
     @ObservedObject var network = MacConnectionClient.shared
+    @Environment(\.scenePhase) private var scenePhase
     
     @State private var currentColorHex: String = "#FF3B30"
     @State private var currentLineWidth: Double = 6.0
@@ -77,6 +78,16 @@ public struct MirrorWorkspaceView: View {
         }
         .onAppear {
             network.startBrowsing()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .active:
+                network.handleAppDidBecomeActive()
+            case .background:
+                network.handleAppDidEnterBackground()
+            default:
+                break
+            }
         }
         .alert("Connetti a Mac tramite IP", isPresented: $showingManualIPAlert) {
             TextField("es. 192.168.1.50", text: $manualIPText)
@@ -177,18 +188,25 @@ public struct MirrorWorkspaceView: View {
     private var floatingToolbarHUD: some View {
         HStack(spacing: 14) {
             // Connection Status Pill
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(network.isConnected ? Color.green : Color.orange)
-                    .frame(width: 8, height: 8)
-                Text(network.isConnected ? "RecDrive Mac" : "In ricerca...")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.white)
+            Button(action: {
+                if !network.isConnected {
+                    network.reconnect()
+                }
+            }) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(network.isConnected ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(network.isConnected ? "RecDrive Mac" : "Riconnetti...")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(network.isConnected ? 0.12 : 0.22))
+                .cornerRadius(20)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.white.opacity(0.12))
-            .cornerRadius(20)
+            .buttonStyle(.plain)
             
             Divider()
                 .frame(height: 20)
