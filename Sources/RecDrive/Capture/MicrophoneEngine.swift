@@ -5,13 +5,14 @@ import CoreAudio
 /// Captures audio from the default input device (microphone) via AVAudioEngine
 /// and transforms PCM audio buffers into CMSampleBuffer instances with accurate presentation timestamps.
 public final class MicrophoneEngine: @unchecked Sendable {
-    private let audioEngine = AVAudioEngine()
+    private var audioEngine: AVAudioEngine?
+    private var audioConverter: AVAudioConverter?
     private var isRunning = false
     private let lock = NSLock()
     
     private var onAudioSampleBuffer: ((CMSampleBuffer) -> Void)?
-    private var sampleRate: Double = 48000.0
-    private var channelCount: AVAudioChannelCount = 2
+    public private(set) var sampleRate: Double = 48000.0
+    public private(set) var channelCount: Int = 1
     
     public init() {}
     
@@ -19,55 +20,111 @@ public final class MicrophoneEngine: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         
-        guard !isRunning else { return }
-        self.onAudioSampleBuffer = handler
-        
-        let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.inputFormat(forBus: 0)
-        
-        guard inputFormat.sampleRate > 0 && inputFormat.channelCount > 0 else {
-            throw NSError(domain: "RecDrive.MicEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid microphone audio input format."])
+        if isRunning {
+            stopCaptureLocked()
         }
         
-        self.sampleRate = inputFormat.sampleRate
-        self.channelCount = min(inputFormat.channelCount, 2)
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let hwFormat = inputNode.inputFormat(forBus: 0)
+        let outputBusFormat = inputNode.outputFormat(forBus: 0)
+        let tapFormat = (outputBusFormat.sampleRate > 0 && outputBusFormat.channelCount > 0) ? outputBusFormat : hwFormat
         
-        let targetFormat = AVAudioFormat(
+        guard tapFormat.sampleRate > 0 && tapFormat.channelCount > 0 else {
+            throw NSError(domain: "RecDrive.MicEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Formato di input del microfono non valido."])
+        }
+        
+        let outSampleRate: Double = 48000.0
+        let outChannels: AVAudioChannelCount = min(max(tapFormat.channelCount, 1), 2)
+        
+        guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
-            sampleRate: self.sampleRate,
-            channels: self.channelCount,
+            sampleRate: outSampleRate,
+            channels: outChannels,
             interleaved: true
-        ) ?? inputFormat
+        ) else {
+            throw NSError(domain: "RecDrive.MicEngine", code: -2, userInfo: [NSLocalizedDescriptionKey: "Impossibile creare il formato PCM per il microfono."])
+        }
+        
+        let converter = AVAudioConverter(from: tapFormat, to: targetFormat)
+        self.audioConverter = converter
+        self.sampleRate = outSampleRate
+        self.channelCount = Int(outChannels)
+        self.onAudioSampleBuffer = handler
         
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] (buffer, when) in
+        inputNode.installTap(onBus: 0, bufferSize: 2048, format: tapFormat) { [weak self] (buffer, when) in
             guard let self = self else { return }
             self.processMicrophoneBuffer(buffer: buffer, when: when, targetFormat: targetFormat)
         }
         
-        audioEngine.prepare()
-        try audioEngine.start()
-        isRunning = true
+        engine.prepare()
+        try engine.start()
+        self.audioEngine = engine
+        self.isRunning = true
     }
     
     public func stopCapture() {
         lock.lock()
         defer { lock.unlock() }
-        
-        guard isRunning else { return }
+        stopCaptureLocked()
+    }
+    
+    private func stopCaptureLocked() {
         onAudioSampleBuffer = nil
-        audioEngine.inputNode.removeTap(onBus: 0)
-        audioEngine.stop()
+        if let engine = audioEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            engine.reset()
+        }
+        audioEngine = nil
+        audioConverter = nil
         isRunning = false
     }
     
     // MARK: - Buffer Conversion to CMSampleBuffer
     
     private func processMicrophoneBuffer(buffer: AVAudioPCMBuffer, when: AVAudioTime, targetFormat: AVAudioFormat) {
-        guard let sampleBuffer = createSampleBuffer(from: buffer, presentationTime: when) else {
+        lock.lock()
+        guard isRunning, let handler = onAudioSampleBuffer else {
+            lock.unlock()
             return
         }
-        onAudioSampleBuffer?(sampleBuffer)
+        let converter = self.audioConverter
+        lock.unlock()
+        
+        let pcmBufferToUse: AVAudioPCMBuffer
+        if let converter = converter, buffer.format != targetFormat {
+            let ratio = targetFormat.sampleRate / max(buffer.format.sampleRate, 1.0)
+            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
+            guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
+                return
+            }
+            
+            var error: NSError?
+            var didProvideInput = false
+            let status = converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
+                if didProvideInput {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+                didProvideInput = true
+                outStatus.pointee = .haveData
+                return buffer
+            }
+            
+            guard status != .error, error == nil, convertedBuffer.frameLength > 0 else {
+                return
+            }
+            pcmBufferToUse = convertedBuffer
+        } else {
+            pcmBufferToUse = buffer
+        }
+        
+        guard let sampleBuffer = createSampleBuffer(from: pcmBufferToUse, presentationTime: when) else {
+            return
+        }
+        handler(sampleBuffer)
     }
     
     private func createSampleBuffer(from pcmBuffer: AVAudioPCMBuffer, presentationTime: AVAudioTime) -> CMSampleBuffer? {
@@ -103,6 +160,7 @@ public final class MicrophoneEngine: @unchecked Sendable {
         
         var sampleBuffer: CMSampleBuffer?
         let sampleCount = CMItemCount(pcmBuffer.frameLength)
+        var sampleSize = max(1, Int(streamDesc.pointee.mBytesPerFrame))
         
         let createStatus = CMSampleBufferCreate(
             allocator: kCFAllocatorDefault,
@@ -114,8 +172,8 @@ public final class MicrophoneEngine: @unchecked Sendable {
             sampleCount: sampleCount,
             sampleTimingEntryCount: 1,
             sampleTimingArray: &timingInfo,
-            sampleSizeEntryCount: 0,
-            sampleSizeArray: nil,
+            sampleSizeEntryCount: 1,
+            sampleSizeArray: &sampleSize,
             sampleBufferOut: &sampleBuffer
         )
         
@@ -131,12 +189,5 @@ public final class MicrophoneEngine: @unchecked Sendable {
         guard setStatus == noErr else { return nil }
         
         return createdBuffer
-    }
-    
-    private func machTimeToSeconds(_ machTime: UInt64) -> Double {
-        var timebaseInfo = mach_timebase_info_data_t()
-        mach_timebase_info(&timebaseInfo)
-        let nanos = Double(machTime * UInt64(timebaseInfo.numer)) / Double(timebaseInfo.denom)
-        return nanos / 1_000_000_000.0
     }
 }

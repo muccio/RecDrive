@@ -10,9 +10,12 @@ public final class MediaWriter: @unchecked Sendable {
     public let outputURL: URL
     private let videoWidth: Int
     private let videoHeight: Int
+    private let fps: Int
     private let codec: AVVideoCodecType
     private let hasSystemAudio: Bool
     private let hasMicrophoneAudio: Bool
+    private let microphoneSampleRate: Double
+    private let microphoneChannels: Int
     
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
@@ -34,23 +37,29 @@ public final class MediaWriter: @unchecked Sendable {
         outputURL: URL,
         videoWidth: Int,
         videoHeight: Int,
+        fps: Int = 60,
         codec: AVVideoCodecType = .hevc,
         hasSystemAudio: Bool = true,
-        hasMicrophoneAudio: Bool = false
+        hasMicrophoneAudio: Bool = false,
+        microphoneSampleRate: Double = 48000.0,
+        microphoneChannels: Int = 1
     ) {
         self.outputURL = outputURL
         // Ensure even dimensions required by hardware encoders
         self.videoWidth = max(2, (videoWidth / 2) * 2)
         self.videoHeight = max(2, (videoHeight / 2) * 2)
+        self.fps = max(15, fps)
         self.codec = codec
         self.hasSystemAudio = hasSystemAudio
         self.hasMicrophoneAudio = hasMicrophoneAudio
+        self.microphoneSampleRate = microphoneSampleRate > 0 ? microphoneSampleRate : 48000.0
+        self.microphoneChannels = min(max(microphoneChannels, 1), 2)
     }
     
     private func beginFinalization() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if isFinalizing && assetWriter?.status == .completed {
+        if isFinalizing {
             return false
         }
         self.isFinalizing = true
@@ -69,16 +78,17 @@ public final class MediaWriter: @unchecked Sendable {
         }
         
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
-        // Set shouldOptimizeForNetworkUse to false so writes go directly to output file
-        // preventing empty 0kb files and sidecar leftovers.
+        // Set shouldOptimizeForNetworkUse to false and flush movie fragments every 2s
+        // so the file grows continuously on disk and finalizes immediately on stop.
         writer.shouldOptimizeForNetworkUse = false
+        writer.movieFragmentInterval = CMTime(seconds: 2.0, preferredTimescale: 600)
         
         // 1. Hardware Video Compression Settings
         let bitrate = calculateTargetBitrate(width: videoWidth, height: videoHeight)
         var compressionProps: [String: Any] = [
             AVVideoAverageBitRateKey: bitrate,
-            AVVideoExpectedSourceFrameRateKey: 60,
-            AVVideoMaxKeyFrameIntervalKey: 60,
+            AVVideoExpectedSourceFrameRateKey: fps,
+            AVVideoMaxKeyFrameIntervalKey: fps,
             AVVideoAllowFrameReorderingKey: false
         ]
         
@@ -117,13 +127,13 @@ public final class MediaWriter: @unchecked Sendable {
             }
         }
         
-        // 3. Microphone Audio Settings (AAC 48kHz Stereo)
+        // 3. Microphone Audio Settings (AAC matched to microphone channels & sample rate)
         if hasMicrophoneAudio {
             let micAudioSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 48000,
-                AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 128000
+                AVSampleRateKey: microphoneSampleRate,
+                AVNumberOfChannelsKey: microphoneChannels,
+                AVEncoderBitRateKey: microphoneChannels == 1 ? 96000 : 128000
             ]
             let micInput = AVAssetWriterInput(mediaType: .audio, outputSettings: micAudioSettings)
             micInput.expectsMediaDataInRealTime = true
@@ -251,6 +261,8 @@ public final class MediaWriter: @unchecked Sendable {
                 let success = aInput.append(sampleBuffer)
                 if success {
                     self.hasAppendedAudio = true
+                } else {
+                    print("[MediaWriter] appendSystemAudioSampleBuffer failed. Status: \(writer.status.rawValue), error: \(String(describing: writer.error))")
                 }
             }
         }
@@ -303,6 +315,8 @@ public final class MediaWriter: @unchecked Sendable {
                 let success = micInput.append(sampleBuffer)
                 if success {
                     self.hasAppendedMic = true
+                } else {
+                    print("[MediaWriter] appendMicrophoneAudioSampleBuffer failed. Status: \(writer.status.rawValue), error: \(String(describing: writer.error))")
                 }
             }
         }
@@ -328,18 +342,19 @@ public final class MediaWriter: @unchecked Sendable {
                 }
             }
             
-            // Timeout watchdog (15 seconds) to prevent infinite UI hangs
+            // Timeout watchdog (10 seconds) to prevent infinite UI hangs
             let timeoutItem = DispatchWorkItem { [weak self] in
-                guard let self = self else { return }
-                print("[MediaWriter] finishWriting timeout (15s) reached! Cancelling writer.")
-                self.assetWriter?.cancelWriting()
+                print("[MediaWriter] finishWriting timeout (10s) reached! Resuming continuation and cancelling writer.")
                 safeResume(.failure(NSError(
                     domain: "RecDrive.MediaWriter",
                     code: -5,
                     userInfo: [NSLocalizedDescriptionKey: "Il salvataggio del video ha superato il tempo limite."]
                 )))
+                DispatchQueue.global(qos: .utility).async {
+                    self?.assetWriter?.cancelWriting()
+                }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 15.0, execute: timeoutItem)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 10.0, execute: timeoutItem)
             
             writerQueue.async { [weak self] in
                 guard let self = self, let writer = self.assetWriter else {
@@ -355,18 +370,24 @@ public final class MediaWriter: @unchecked Sendable {
                 self.lock.unlock()
                 
                 if writer.status == .writing {
-                    // Explicitly end session at the maximum timestamp across all tracks
-                    if started {
-                        let finalEnd = (endPts.isValid && endPts >= startPts) ? endPts : CMClockGetTime(CMClockGetHostTimeClock())
-                        writer.endSession(atSourceTime: finalEnd)
-                    } else {
-                        writer.startSession(atSourceTime: .zero)
-                        writer.endSession(atSourceTime: .zero)
+                    guard started && self.hasAppendedVideo else {
+                        timeoutItem.cancel()
+                        writer.cancelWriting()
+                        safeResume(.failure(NSError(
+                            domain: "RecDrive.MediaWriter",
+                            code: -6,
+                            userInfo: [NSLocalizedDescriptionKey: "Nessun fotogramma video ricevuto durante la registrazione."]
+                        )))
+                        return
                     }
                     
                     self.videoInput?.markAsFinished()
                     self.systemAudioInput?.markAsFinished()
                     self.microphoneAudioInput?.markAsFinished()
+                    
+                    if endPts.isValid && endPts > startPts {
+                        writer.endSession(atSourceTime: endPts)
+                    }
                     
                     writer.finishWriting {
                         timeoutItem.cancel()

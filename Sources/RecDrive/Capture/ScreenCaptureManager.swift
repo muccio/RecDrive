@@ -62,81 +62,123 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         captureMicrophone: Bool = false,
         codec: AVVideoCodecType = .hevc
     ) async throws {
-        guard case .idle = recordingState else { return }
+        switch recordingState {
+        case .idle, .failed:
+            break
+        case .preparing, .recording, .finishing:
+            throw NSError(
+                domain: "RecDrive.Capture",
+                code: -10,
+                userInfo: [NSLocalizedDescriptionKey: "Una registrazione è già in corso o in fase di chiusura."]
+            )
+        }
+        
         self.recordingState = .preparing
         
-        // 1. Determine filter and dimensions
-        let filter: SCContentFilter
-        var width: Int
-        var height: Int
-        
-        switch target {
-        case .display(let display):
-            filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-            width = display.width
-            height = display.height
-        case .window(let window):
-            filter = SCContentFilter(desktopIndependentWindow: window)
-            width = Int(window.frame.width)
-            height = Int(window.frame.height)
-        }
-        
-        // Ensure even dimensions required by hardware encoders
-        width = max(2, (width / 2) * 2)
-        height = max(2, (height / 2) * 2)
-        
-        // 2. Configure Stream Properties
-        let config = SCStreamConfiguration()
-        config.width = width
-        config.height = height
-        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
-        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange // NV12
-        config.showsCursor = true
-        config.capturesAudio = captureSystemAudio
-        if captureSystemAudio {
-            config.sampleRate = 48000
-            config.channelCount = 2
-        }
-        
-        // 3. Initialize Hardware-Accelerated MediaWriter
-        let writer = MediaWriter(
-            outputURL: outputURL,
-            videoWidth: width,
-            videoHeight: height,
-            codec: codec,
-            hasSystemAudio: captureSystemAudio,
-            hasMicrophoneAudio: captureMicrophone
-        )
-        try writer.startWriting()
-        self.mediaWriter = writer
-        
-        // 4. Start Microphone Capture if requested
-        if captureMicrophone {
-            try? micEngine.startCapture { [weak writer] micSampleBuffer in
-                writer?.appendMicrophoneAudioSampleBuffer(micSampleBuffer)
+        // Clean up any lingering previous session state
+        timer?.invalidate()
+        timer = nil
+        micEngine.stopCapture()
+        if let oldStream = self.stream {
+            self.stream = nil
+            Task.detached {
+                try? await oldStream.stopCapture()
             }
         }
+        self.mediaWriter = nil
         
-        // 5. Initialize and Start SCStream
-        let scStream = SCStream(filter: filter, configuration: config, delegate: self)
-        try scStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: captureQueue)
-        if captureSystemAudio {
-            try scStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: captureQueue)
-        }
-        
-        try await scStream.startCapture()
-        self.stream = scStream
-        
-        // 6. Start Timer for UI state
-        self.recordingStartTime = Date()
-        self.recordingState = .recording(elapsed: 0)
-        
-        self.timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            guard let self = self, let start = self.recordingStartTime else { return }
-            let elapsed = Date().timeIntervalSince(start)
-            Task { @MainActor in
-                self.recordingState = .recording(elapsed: elapsed)
+        do {
+            // 1. Determine filter and dimensions
+            let filter: SCContentFilter
+            var width: Int
+            var height: Int
+            
+            switch target {
+            case .display(let display):
+                filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+                width = display.width
+                height = display.height
+            case .window(let window):
+                filter = SCContentFilter(desktopIndependentWindow: window)
+                width = Int(window.frame.width)
+                height = Int(window.frame.height)
             }
+            
+            // Ensure even dimensions required by hardware encoders
+            width = max(2, (width / 2) * 2)
+            height = max(2, (height / 2) * 2)
+            
+            // 2. Configure Stream Properties
+            let config = SCStreamConfiguration()
+            config.width = width
+            config.height = height
+            config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(15, fps)))
+            config.queueDepth = 6
+            config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange // NV12
+            config.showsCursor = true
+            config.capturesAudio = captureSystemAudio
+            if captureSystemAudio {
+                config.sampleRate = 48000
+                config.channelCount = 2
+            }
+            
+            // 3. Start Microphone Capture first (if requested) so we know its exact channel count & status
+            var micActive = false
+            if captureMicrophone {
+                do {
+                    try micEngine.startCapture { [weak self] micSampleBuffer in
+                        self?.mediaWriter?.appendMicrophoneAudioSampleBuffer(micSampleBuffer)
+                    }
+                    micActive = true
+                } catch {
+                    print("[ScreenCaptureManager] Microphone start failed, continuing without mic track: \(error)")
+                    micActive = false
+                }
+            }
+            
+            // 4. Initialize Hardware-Accelerated MediaWriter
+            let writer = MediaWriter(
+                outputURL: outputURL,
+                videoWidth: width,
+                videoHeight: height,
+                fps: fps,
+                codec: codec,
+                hasSystemAudio: captureSystemAudio,
+                hasMicrophoneAudio: micActive,
+                microphoneSampleRate: micEngine.sampleRate,
+                microphoneChannels: micEngine.channelCount
+            )
+            try writer.startWriting()
+            self.mediaWriter = writer
+            
+            // 5. Initialize and Start SCStream
+            let scStream = SCStream(filter: filter, configuration: config, delegate: self)
+            try scStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: captureQueue)
+            if captureSystemAudio {
+                try scStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: captureQueue)
+            }
+            
+            try await scStream.startCapture()
+            self.stream = scStream
+            
+            // 6. Start Timer for UI state
+            self.recordingStartTime = Date()
+            self.recordingState = .recording(elapsed: 0)
+            
+            self.timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                guard let self = self, let start = self.recordingStartTime else { return }
+                let elapsed = Date().timeIntervalSince(start)
+                Task { @MainActor in
+                    guard case .recording = self.recordingState else { return }
+                    self.recordingState = .recording(elapsed: elapsed)
+                }
+            }
+        } catch {
+            micEngine.stopCapture()
+            self.mediaWriter = nil
+            self.stream = nil
+            self.recordingState = .idle
+            throw error
         }
     }
     
@@ -145,6 +187,7 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
     @MainActor
     public func stopCapture() async throws -> URL {
         guard case .recording = recordingState else {
+            self.recordingState = .idle
             throw NSError(domain: "RecDrive.Capture", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nessuna registrazione attiva da fermare."])
         }
         self.recordingState = .finishing
@@ -155,42 +198,63 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         // 1. Instantly stop microphone ingress
         micEngine.stopCapture()
         
-        // 2. Remove outputs and stop ScreenCaptureKit stream with a safety timeout
-        if let scStream = stream {
-            try? scStream.removeStreamOutput(self, type: .screen)
-            try? scStream.removeStreamOutput(self, type: .audio)
-            
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    try? await scStream.stopCapture()
-                }
-                group.addTask {
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                }
-                _ = await group.next()
-                group.cancelAll()
-            }
+        // 2. Detach and stop ScreenCaptureKit stream with a non-blocking 2-second timeout
+        if let scStream = self.stream {
             self.stream = nil
+            await stopSCStreamWithTimeout(scStream, timeoutSeconds: 2.0)
         }
         
-        defer {
-            self.mediaWriter = nil
-            self.recordingStartTime = nil
-        }
+        let writer = self.mediaWriter
+        self.mediaWriter = nil
+        self.recordingStartTime = nil
         
         // 3. Finalize MediaWriter
-        guard let writer = mediaWriter else {
+        guard let activeWriter = writer else {
             self.recordingState = .idle
             throw NSError(domain: "RecDrive.Capture", code: -2, userInfo: [NSLocalizedDescriptionKey: "Scrittura file non disponibile."])
         }
         
         do {
-            let outputURL = try await writer.finishWriting()
+            let outputURL = try await activeWriter.finishWriting()
             self.recordingState = .idle
             return outputURL
         } catch {
-            self.recordingState = .failed(error.localizedDescription)
+            self.recordingState = .idle
             throw error
+        }
+    }
+    
+    private func stopSCStreamWithTimeout(_ scStream: SCStream, timeoutSeconds: Double) async {
+        final class ContinuationGate: @unchecked Sendable {
+            private let lock = NSLock()
+            private var continuation: CheckedContinuation<Void, Never>?
+            init(_ continuation: CheckedContinuation<Void, Never>) {
+                self.continuation = continuation
+            }
+            func resumeOnce() {
+                lock.lock()
+                let cont = continuation
+                continuation = nil
+                lock.unlock()
+                cont?.resume()
+            }
+        }
+        
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let gate = ContinuationGate(continuation)
+            
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeoutSeconds) {
+                gate.resumeOnce()
+            }
+            
+            Task.detached(priority: .userInitiated) { [weak self] in
+                try? await scStream.stopCapture()
+                if let self = self {
+                    try? scStream.removeStreamOutput(self, type: .screen)
+                    try? scStream.removeStreamOutput(self, type: .audio)
+                }
+                gate.resumeOnce()
+            }
         }
     }
 }
@@ -199,7 +263,7 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
 
 extension ScreenCaptureManager: SCStreamOutput, SCStreamDelegate {
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard let writer = mediaWriter, sampleBuffer.isValid else { return }
+        guard stream === self.stream, let writer = mediaWriter, sampleBuffer.isValid else { return }
         
         switch type {
         case .screen:
@@ -230,6 +294,7 @@ extension ScreenCaptureManager: SCStreamOutput, SCStreamDelegate {
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("[ScreenCaptureManager] Stream stopped with error: \(error)")
         Task { @MainActor in
+            guard stream === self.stream, case .recording = self.recordingState else { return }
             self.recordingState = .failed(error.localizedDescription)
         }
     }

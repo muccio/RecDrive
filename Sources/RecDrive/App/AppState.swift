@@ -72,13 +72,30 @@ public final class AppState: ObservableObject {
             return
         }
         
-        // Refresh sources if no target selected
-        if selectedTarget == nil {
-            await captureManager.refreshShareableContent()
-            if let firstDisplay = captureManager.availableDisplays.first {
-                self.selectedTarget = .display(firstDisplay.scDisplay)
-                self.selectedTargetName = firstDisplay.name
+        // Always refresh shareable content before recording so SCDisplay / SCWindow instances are never stale
+        await captureManager.refreshShareableContent()
+        if let currentTarget = selectedTarget {
+            switch currentTarget {
+            case .display(let oldDisplay):
+                if let matched = captureManager.availableDisplays.first(where: { $0.id == oldDisplay.displayID }) {
+                    self.selectedTarget = .display(matched.scDisplay)
+                    self.selectedTargetName = matched.name
+                } else if let firstDisplay = captureManager.availableDisplays.first {
+                    self.selectedTarget = .display(firstDisplay.scDisplay)
+                    self.selectedTargetName = firstDisplay.name
+                }
+            case .window(let oldWindow):
+                if let matched = captureManager.availableWindows.first(where: { $0.id == oldWindow.windowID }) {
+                    self.selectedTarget = .window(matched.scWindow)
+                    self.selectedTargetName = "\(matched.appName) - \(matched.title)"
+                } else if let firstDisplay = captureManager.availableDisplays.first {
+                    self.selectedTarget = .display(firstDisplay.scDisplay)
+                    self.selectedTargetName = firstDisplay.name
+                }
             }
+        } else if let firstDisplay = captureManager.availableDisplays.first {
+            self.selectedTarget = .display(firstDisplay.scDisplay)
+            self.selectedTargetName = firstDisplay.name
         }
         
         guard let target = selectedTarget else {
