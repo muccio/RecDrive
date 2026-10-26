@@ -1,0 +1,15 @@
+# Android build & cache
+AndroidApp/.gradle/
+AndroidApp/build/
+AndroidApp/app/build/
+AndroidApp/local.properties
+AndroidApp/.idea/
+AndroidApp/*.iml
+
+# macOS build
+MacReceiver/bin/
+MacReceiver/MacReceiver.app
+MacReceiver/.build/
+
+# macOS system
+.DS_Store

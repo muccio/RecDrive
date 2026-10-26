@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.recdrive.macreceiver</string>
+    <key>CFBundleName</key>
+    <string>MacReceiver</string>
+    <key>CFBundleDisplayName</key>
+    <string>RecDrive Remote Receiver</string>
+    <key>CFBundleExecutable</key>
+    <string>MacReceiver</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+    <!-- LSUIElement: true ensures the app runs solely as a menu bar item without a Dock icon -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>RecDrive Remote Receiver needs AppleScript access to control volume when commanded from the Android remote.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>RecDrive Remote Receiver listens for incoming control commands from your Android device on your local Wi-Fi.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_recdrive-remote._tcp</string>
+    </array>
+</dict>
+</plist>

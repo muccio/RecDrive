@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">RecDrive Remote</string>
+    <string name="tab_presentation">Slide</string>
+    <string name="tab_trackpad">Mouse</string>
+    <string name="tab_shortcuts">Comandi</string>
+    <string name="next_slide">AVANTI</string>
+    <string name="prev_slide">INDIETRO</string>
+    <string name="play_slideshow">Avvia Slide</string>
+    <string name="exit_slideshow">Esci Slide</string>
+    <string name="black_screen">Schermo Nero</string>
+    <string name="white_screen">Schermo Bianco</string>
+</resources>
