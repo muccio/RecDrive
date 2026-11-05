@@ -89,7 +89,7 @@ public final class RealTimeAudioMixer: @unchecked Sendable {
         if !isSessionActive || !timelineStartPTS.isValid {
             isSessionActive = true
             timelineStartPTS = pts
-            lastEmittedPTS = pts
+            lastEmittedPTS = .invalid
         }
         
         // Calculate frame offset relative to timelineStartPTS
@@ -100,7 +100,8 @@ public final class RealTimeAudioMixer: @unchecked Sendable {
             return
         }
         
-        let requiredTotalFrames = frameOffset + numSamples
+        let sampleFrameCount = stereoFloats.count / channelCount
+        let requiredTotalFrames = frameOffset + sampleFrameCount
         let requiredTotalFloats = requiredTotalFrames * channelCount
         
         if timelineBuffer.count < requiredTotalFloats {
@@ -174,11 +175,10 @@ public final class RealTimeAudioMixer: @unchecked Sendable {
             else if val < -1.0 { clampedFloats[i] = -1.0 }
         }
         
-        // Ensure strictly monotonic PTS
+        // Ensure strictly monotonic and continuous PTS
         let finalPTS: CMTime
         if lastEmittedPTS.isValid {
-            let minPTS = lastEmittedPTS + CMTime(value: 1, timescale: CMTimeScale(sampleRate))
-            finalPTS = (pts < minPTS) ? minPTS : pts
+            finalPTS = (pts < lastEmittedPTS) ? lastEmittedPTS : pts
         } else {
             finalPTS = pts
         }
@@ -246,19 +246,42 @@ public final class RealTimeAudioMixer: @unchecked Sendable {
         asbd: AudioStreamBasicDescription,
         numSamples: Int
     ) -> [Float]? {
-        var blockBuffer: CMBlockBuffer?
-        var audioBufferList = AudioBufferList()
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+        var bufferListSizeNeeded: Int = 0
+        let sizeStatus = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
             sampleBuffer,
-            bufferListSizeNeededOut: nil,
-            bufferListOut: &audioBufferList,
-            bufferListSize: MemoryLayout<AudioBufferList>.size,
+            bufferListSizeNeededOut: &bufferListSizeNeeded,
+            bufferListOut: nil,
+            bufferListSize: 0,
             blockBufferAllocator: nil,
             blockBufferMemoryAllocator: nil,
             flags: 0,
-            blockBufferOut: &blockBuffer
+            blockBufferOut: nil
+        )
+        guard sizeStatus == noErr, bufferListSizeNeeded > 0 else { return nil }
+        
+        let rawBuffer = UnsafeMutableRawPointer.allocate(
+            byteCount: bufferListSizeNeeded,
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { rawBuffer.deallocate() }
+        
+        let ablPtr = rawBuffer.bindMemory(to: AudioBufferList.self, capacity: 1)
+        var retainedBlockBuffer: CMBlockBuffer?
+        
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: nil,
+            bufferListOut: ablPtr,
+            bufferListSize: bufferListSizeNeeded,
+            blockBufferAllocator: nil,
+            blockBufferMemoryAllocator: nil,
+            flags: 0,
+            blockBufferOut: &retainedBlockBuffer
         )
         guard status == noErr else { return nil }
+        
+        let bufferList = UnsafeMutableAudioBufferListPointer(ablPtr)
+        guard bufferList.count > 0 else { return nil }
         
         var result = [Float](repeating: 0, count: numSamples * channelCount)
         
@@ -267,69 +290,81 @@ public final class RealTimeAudioMixer: @unchecked Sendable {
         let channels = Int(asbd.mChannelsPerFrame)
         
         if isFloat {
-            if isNonInterleaved && channels >= 2 {
+            if isNonInterleaved && bufferList.count >= 2 {
                 // Non-interleaved stereo
-                if let mData0 = audioBufferList.mBuffers.mData {
-                    let ptr0 = mData0.assumingMemoryBound(to: Float.self)
-                    withUnsafePointer(to: &audioBufferList.mBuffers) { bufPtr in
-                        let nextBuf = bufPtr.advanced(by: 1).pointee
-                        if let mData1 = nextBuf.mData {
-                            let ptr1 = mData1.assumingMemoryBound(to: Float.self)
-                            for i in 0..<numSamples {
-                                result[i * 2] = ptr0[i]
-                                result[i * 2 + 1] = ptr1[i]
-                            }
-                        }
+                if let m0 = bufferList[0].mData, let m1 = bufferList[1].mData {
+                    let ptr0 = m0.assumingMemoryBound(to: Float.self)
+                    let ptr1 = m1.assumingMemoryBound(to: Float.self)
+                    for i in 0..<numSamples {
+                        result[i * 2] = ptr0[i]
+                        result[i * 2 + 1] = ptr1[i]
                     }
                 }
-            } else if isNonInterleaved && channels == 1 {
-                // Non-interleaved mono -> replicate to Left and Right
-                if let mData0 = audioBufferList.mBuffers.mData {
-                    let ptr0 = mData0.assumingMemoryBound(to: Float.self)
+            } else if let m0 = bufferList[0].mData {
+                let ptr0 = m0.assumingMemoryBound(to: Float.self)
+                if isNonInterleaved || channels == 1 {
+                    // Non-interleaved mono or single channel -> replicate to Left and Right
                     for i in 0..<numSamples {
                         let val = ptr0[i]
                         result[i * 2] = val
                         result[i * 2 + 1] = val
                     }
-                }
-            } else if !isNonInterleaved && channels >= 2 {
-                // Interleaved stereo
-                if let mData = audioBufferList.mBuffers.mData {
-                    let ptr = mData.assumingMemoryBound(to: Float.self)
+                } else if channels >= 2 {
+                    // Interleaved stereo
                     for i in 0..<numSamples {
-                        result[i * 2] = ptr[i * channels]
-                        result[i * 2 + 1] = ptr[i * channels + 1]
-                    }
-                }
-            } else if !isNonInterleaved && channels == 1 {
-                // Interleaved mono
-                if let mData = audioBufferList.mBuffers.mData {
-                    let ptr = mData.assumingMemoryBound(to: Float.self)
-                    for i in 0..<numSamples {
-                        let val = ptr[i]
-                        result[i * 2] = val
-                        result[i * 2 + 1] = val
+                        result[i * 2] = ptr0[i * channels]
+                        result[i * 2 + 1] = ptr0[i * channels + 1]
                     }
                 }
             }
         } else {
             // 16-bit Int PCM conversion to Float [-1.0, 1.0]
             let factor: Float = 1.0 / 32768.0
-            if let mData = audioBufferList.mBuffers.mData {
-                let ptr = mData.assumingMemoryBound(to: Int16.self)
-                if channels >= 2 {
+            if isNonInterleaved && bufferList.count >= 2 {
+                if let m0 = bufferList[0].mData, let m1 = bufferList[1].mData {
+                    let ptr0 = m0.assumingMemoryBound(to: Int16.self)
+                    let ptr1 = m1.assumingMemoryBound(to: Int16.self)
                     for i in 0..<numSamples {
-                        result[i * 2] = Float(ptr[i * channels]) * factor
-                        result[i * 2 + 1] = Float(ptr[i * channels + 1]) * factor
+                        result[i * 2] = Float(ptr0[i]) * factor
+                        result[i * 2 + 1] = Float(ptr1[i]) * factor
+                    }
+                }
+            } else if let m0 = bufferList[0].mData {
+                let ptr0 = m0.assumingMemoryBound(to: Int16.self)
+                if channels >= 2 && !isNonInterleaved {
+                    for i in 0..<numSamples {
+                        result[i * 2] = Float(ptr0[i * channels]) * factor
+                        result[i * 2 + 1] = Float(ptr0[i * channels + 1]) * factor
                     }
                 } else {
                     for i in 0..<numSamples {
-                        let val = Float(ptr[i]) * factor
+                        let val = Float(ptr0[i]) * factor
                         result[i * 2] = val
                         result[i * 2 + 1] = val
                     }
                 }
             }
+        }
+        
+        // Handle resampling if input sample rate differs from 48000 Hz
+        let inSampleRate = asbd.mSampleRate
+        if inSampleRate > 0 && abs(inSampleRate - sampleRate) > 1.0 {
+            let outSampleCount = Int(round(Double(numSamples) * sampleRate / inSampleRate))
+            guard outSampleCount > 0 else { return result }
+            var resampled = [Float](repeating: 0, count: outSampleCount * channelCount)
+            let ratio = Double(numSamples - 1) / Double(max(1, outSampleCount - 1))
+            for i in 0..<outSampleCount {
+                let srcPos = Double(i) * ratio
+                let srcIdx = Int(srcPos)
+                let frac = Float(srcPos - Double(srcIdx))
+                let nextIdx = min(srcIdx + 1, numSamples - 1)
+                for ch in 0..<channelCount {
+                    let s0 = result[srcIdx * channelCount + ch]
+                    let s1 = result[nextIdx * channelCount + ch]
+                    resampled[i * channelCount + ch] = s0 + frac * (s1 - s0)
+                }
+            }
+            return resampled
         }
         
         return result

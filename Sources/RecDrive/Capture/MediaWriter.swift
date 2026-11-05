@@ -340,20 +340,26 @@ public final class MediaWriter: @unchecked Sendable {
             if finalPTS == pts {
                 bufferToAppend = sampleBuffer
             } else {
-                var timing = CMSampleTimingInfo(
-                    duration: CMSampleBufferGetDuration(sampleBuffer),
-                    presentationTimeStamp: finalPTS,
-                    decodeTimeStamp: .invalid
-                )
+                var timing = CMSampleTimingInfo()
+                let status = CMSampleBufferGetSampleTimingInfo(sampleBuffer, at: 0, timingInfoOut: &timing)
+                if status == noErr {
+                    timing.presentationTimeStamp = finalPTS
+                } else {
+                    timing = CMSampleTimingInfo(
+                        duration: CMTime(value: 1, timescale: 48000),
+                        presentationTimeStamp: finalPTS,
+                        decodeTimeStamp: .invalid
+                    )
+                }
                 var newBuffer: CMSampleBuffer?
-                let status = CMSampleBufferCreateCopyWithNewTiming(
+                let copyStatus = CMSampleBufferCreateCopyWithNewTiming(
                     allocator: kCFAllocatorDefault,
                     sampleBuffer: sampleBuffer,
                     sampleTimingEntryCount: 1,
                     sampleTimingArray: &timing,
                     sampleBufferOut: &newBuffer
                 )
-                bufferToAppend = (status == noErr && newBuffer != nil) ? newBuffer! : sampleBuffer
+                bufferToAppend = (copyStatus == noErr && newBuffer != nil) ? newBuffer! : sampleBuffer
             }
             
             if aInput.isReadyForMoreMediaData {
