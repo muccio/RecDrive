@@ -6,6 +6,8 @@ import VideoToolbox
 
 /// Non-blocking, hardware-accelerated media multiplexer using AVAssetWriter.
 /// Directly encodes video frames from ScreenCaptureKit and audio tracks from system and microphone.
+/// Supports both unified real-time audio mixing (combining system sound + voice into Track 1)
+/// and multi-track audio recording for advanced post-production.
 public final class MediaWriter: @unchecked Sendable {
     public let outputURL: URL
     private let videoWidth: Int
@@ -16,11 +18,15 @@ public final class MediaWriter: @unchecked Sendable {
     private let hasMicrophoneAudio: Bool
     private let microphoneSampleRate: Double
     private let microphoneChannels: Int
+    private let mixAudioTracks: Bool
     
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
-    private var systemAudioInput: AVAssetWriterInput?
-    private var microphoneAudioInput: AVAssetWriterInput?
+    
+    // Audio Inputs
+    private var primaryAudioInput: AVAssetWriterInput?
+    private var secondaryAudioInput: AVAssetWriterInput?
+    private var audioMixer: RealTimeAudioMixer?
     
     private var isSessionStarted = false
     private var sessionStartTime: CMTime = .invalid
@@ -28,7 +34,10 @@ public final class MediaWriter: @unchecked Sendable {
     private var isFinalizing = false
     private var hasAppendedVideo = false
     private var hasAppendedAudio = false
-    private var hasAppendedMic = false
+    
+    // Strict monotonic timestamp trackers
+    private var lastPrimaryAudioPTS: CMTime = .invalid
+    private var lastSecondaryAudioPTS: CMTime = .invalid
     
     private let writerQueue = DispatchQueue(label: "com.recdrive.mediawriter", qos: .userInteractive)
     private let lock = NSLock()
@@ -42,10 +51,10 @@ public final class MediaWriter: @unchecked Sendable {
         hasSystemAudio: Bool = true,
         hasMicrophoneAudio: Bool = false,
         microphoneSampleRate: Double = 48000.0,
-        microphoneChannels: Int = 1
+        microphoneChannels: Int = 2,
+        mixAudioTracks: Bool = true
     ) {
         self.outputURL = outputURL
-        // Ensure even dimensions required by hardware encoders
         self.videoWidth = max(2, (videoWidth / 2) * 2)
         self.videoHeight = max(2, (videoHeight / 2) * 2)
         self.fps = max(15, fps)
@@ -54,6 +63,7 @@ public final class MediaWriter: @unchecked Sendable {
         self.hasMicrophoneAudio = hasMicrophoneAudio
         self.microphoneSampleRate = microphoneSampleRate > 0 ? microphoneSampleRate : 48000.0
         self.microphoneChannels = min(max(microphoneChannels, 1), 2)
+        self.mixAudioTracks = mixAudioTracks
     }
     
     private func beginFinalization() -> Bool {
@@ -72,14 +82,11 @@ public final class MediaWriter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         
-        // Remove existing file if present
         if FileManager.default.fileExists(atPath: outputURL.path) {
             try? FileManager.default.removeItem(at: outputURL)
         }
         
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
-        // Set shouldOptimizeForNetworkUse to false and flush movie fragments every 2s
-        // so the file grows continuously on disk and finalizes immediately on stop.
         writer.shouldOptimizeForNetworkUse = false
         writer.movieFragmentInterval = CMTime(seconds: 2.0, preferredTimescale: 600)
         
@@ -111,35 +118,63 @@ public final class MediaWriter: @unchecked Sendable {
         writer.add(vInput)
         self.videoInput = vInput
         
-        // 2. System Audio Settings (AAC 48kHz Stereo)
-        if hasSystemAudio {
-            let systemAudioSettings: [String: Any] = [
+        // 2. Audio Configuration
+        let isUnifiedMix = mixAudioTracks && hasSystemAudio && hasMicrophoneAudio
+        
+        if isUnifiedMix {
+            // Unified Mixed Track (System Audio + Mic merged into Track 1)
+            let masterAudioSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 48000,
                 AVNumberOfChannelsKey: 2,
                 AVEncoderBitRateKey: 192000
             ]
-            let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: systemAudioSettings)
+            let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: masterAudioSettings)
             aInput.expectsMediaDataInRealTime = true
             if writer.canAdd(aInput) {
                 writer.add(aInput)
-                self.systemAudioInput = aInput
+                self.primaryAudioInput = aInput
             }
-        }
-        
-        // 3. Microphone Audio Settings (AAC matched to microphone channels & sample rate)
-        if hasMicrophoneAudio {
-            let micAudioSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: microphoneSampleRate,
-                AVNumberOfChannelsKey: microphoneChannels,
-                AVEncoderBitRateKey: microphoneChannels == 1 ? 96000 : 128000
-            ]
-            let micInput = AVAssetWriterInput(mediaType: .audio, outputSettings: micAudioSettings)
-            micInput.expectsMediaDataInRealTime = true
-            if writer.canAdd(micInput) {
-                writer.add(micInput)
-                self.microphoneAudioInput = micInput
+            
+            // Initialize RealTimeAudioMixer
+            self.audioMixer = RealTimeAudioMixer { [weak self] mixedBuffer in
+                self?.appendAudioSampleBufferInternal(mixedBuffer, isPrimary: true)
+            }
+        } else {
+            // Standard or Separate Audio Tracks
+            if hasSystemAudio {
+                let systemAudioSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: 48000,
+                    AVNumberOfChannelsKey: 2,
+                    AVEncoderBitRateKey: 192000
+                ]
+                let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: systemAudioSettings)
+                aInput.expectsMediaDataInRealTime = true
+                if writer.canAdd(aInput) {
+                    writer.add(aInput)
+                    self.primaryAudioInput = aInput
+                }
+            }
+            
+            if hasMicrophoneAudio {
+                let micChannels = microphoneChannels
+                let micAudioSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: microphoneSampleRate,
+                    AVNumberOfChannelsKey: micChannels,
+                    AVEncoderBitRateKey: micChannels == 1 ? 96000 : 128000
+                ]
+                let micInput = AVAssetWriterInput(mediaType: .audio, outputSettings: micAudioSettings)
+                micInput.expectsMediaDataInRealTime = true
+                if writer.canAdd(micInput) {
+                    writer.add(micInput)
+                    if self.primaryAudioInput == nil {
+                        self.primaryAudioInput = micInput
+                    } else {
+                        self.secondaryAudioInput = micInput
+                    }
+                }
             }
         }
         
@@ -154,7 +189,6 @@ public final class MediaWriter: @unchecked Sendable {
         self.isFinalizing = false
         self.hasAppendedVideo = false
         self.hasAppendedAudio = false
-        self.hasAppendedMic = false
     }
     
     // MARK: - Append Video Sample Buffer
@@ -220,52 +254,13 @@ public final class MediaWriter: @unchecked Sendable {
             return
         }
         
-        lock.lock()
-        if isFinalizing {
-            lock.unlock()
+        if let mixer = audioMixer {
+            mixer.appendSystemAudio(sampleBuffer)
             return
         }
-        lock.unlock()
         
-        writerQueue.async { [weak self] in
-            guard let self = self,
-                  let writer = self.assetWriter,
-                  let aInput = self.systemAudioInput,
-                  writer.status == .writing else { return }
-            
-            self.lock.lock()
-            if self.isFinalizing {
-                self.lock.unlock()
-                return
-            }
-            
-            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            guard pts.isValid else {
-                self.lock.unlock()
-                return
-            }
-            
-            let started = self.isSessionStarted
-            let startPts = self.sessionStartTime
-            
-            if started && pts >= startPts {
-                if pts > self.latestPresentationTime || !self.latestPresentationTime.isValid {
-                    self.latestPresentationTime = pts
-                }
-            }
-            self.lock.unlock()
-            
-            guard started, pts >= startPts else { return }
-            
-            if aInput.isReadyForMoreMediaData {
-                let success = aInput.append(sampleBuffer)
-                if success {
-                    self.hasAppendedAudio = true
-                } else {
-                    print("[MediaWriter] appendSystemAudioSampleBuffer failed. Status: \(writer.status.rawValue), error: \(String(describing: writer.error))")
-                }
-            }
-        }
+        // Single track or unmixed separate tracks
+        appendAudioSampleBufferInternal(sampleBuffer, isPrimary: true)
     }
     
     public func appendMicrophoneAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
@@ -274,6 +269,17 @@ public final class MediaWriter: @unchecked Sendable {
             return
         }
         
+        if let mixer = audioMixer {
+            mixer.appendMicrophoneAudio(sampleBuffer)
+            return
+        }
+        
+        // If system audio was present, mic goes to secondaryAudioInput. Otherwise it is primaryAudioInput.
+        let isPrimary = (hasSystemAudio == false)
+        appendAudioSampleBufferInternal(sampleBuffer, isPrimary: isPrimary)
+    }
+    
+    private func appendAudioSampleBufferInternal(_ sampleBuffer: CMSampleBuffer, isPrimary: Bool) {
         lock.lock()
         if isFinalizing {
             lock.unlock()
@@ -284,8 +290,10 @@ public final class MediaWriter: @unchecked Sendable {
         writerQueue.async { [weak self] in
             guard let self = self,
                   let writer = self.assetWriter,
-                  let micInput = self.microphoneAudioInput,
                   writer.status == .writing else { return }
+            
+            let targetInput = isPrimary ? self.primaryAudioInput : self.secondaryAudioInput
+            guard let aInput = targetInput else { return }
             
             self.lock.lock()
             if self.isFinalizing {
@@ -307,16 +315,53 @@ public final class MediaWriter: @unchecked Sendable {
                     self.latestPresentationTime = pts
                 }
             }
+            
+            // Enforce strictly monotonic PTS to prevent AVAssetWriter fatal failures
+            let lastPTS = isPrimary ? self.lastPrimaryAudioPTS : self.lastSecondaryAudioPTS
+            let finalPTS: CMTime
+            if lastPTS.isValid {
+                let minPTS = lastPTS + CMTime(value: 1, timescale: 48000)
+                finalPTS = (pts < minPTS) ? minPTS : pts
+            } else {
+                finalPTS = pts
+            }
+            
+            if isPrimary {
+                self.lastPrimaryAudioPTS = finalPTS
+            } else {
+                self.lastSecondaryAudioPTS = finalPTS
+            }
             self.lock.unlock()
             
-            guard started, pts >= startPts else { return }
+            guard started, finalPTS >= startPts else { return }
             
-            if micInput.isReadyForMoreMediaData {
-                let success = micInput.append(sampleBuffer)
+            // Adjust buffer PTS if needed
+            let bufferToAppend: CMSampleBuffer
+            if finalPTS == pts {
+                bufferToAppend = sampleBuffer
+            } else {
+                var timing = CMSampleTimingInfo(
+                    duration: CMSampleBufferGetDuration(sampleBuffer),
+                    presentationTimeStamp: finalPTS,
+                    decodeTimeStamp: .invalid
+                )
+                var newBuffer: CMSampleBuffer?
+                let status = CMSampleBufferCreateCopyWithNewTiming(
+                    allocator: kCFAllocatorDefault,
+                    sampleBuffer: sampleBuffer,
+                    sampleTimingEntryCount: 1,
+                    sampleTimingArray: &timing,
+                    sampleBufferOut: &newBuffer
+                )
+                bufferToAppend = (status == noErr && newBuffer != nil) ? newBuffer! : sampleBuffer
+            }
+            
+            if aInput.isReadyForMoreMediaData {
+                let success = aInput.append(bufferToAppend)
                 if success {
-                    self.hasAppendedMic = true
+                    self.hasAppendedAudio = true
                 } else {
-                    print("[MediaWriter] appendMicrophoneAudioSampleBuffer failed. Status: \(writer.status.rawValue), error: \(String(describing: writer.error))")
+                    print("[MediaWriter] appendAudioSampleBuffer failed. Status: \(writer.status.rawValue), error: \(String(describing: writer.error))")
                 }
             }
         }
@@ -328,6 +373,9 @@ public final class MediaWriter: @unchecked Sendable {
         if !beginFinalization() {
             return outputURL
         }
+        
+        // Flush any remaining samples in the audio mixer before closing
+        audioMixer?.flush()
         
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
@@ -342,7 +390,6 @@ public final class MediaWriter: @unchecked Sendable {
                 }
             }
             
-            // Timeout watchdog (10 seconds) to prevent infinite UI hangs
             let timeoutItem = DispatchWorkItem { [weak self] in
                 print("[MediaWriter] finishWriting timeout (10s) reached! Resuming continuation and cancelling writer.")
                 safeResume(.failure(NSError(
@@ -382,8 +429,8 @@ public final class MediaWriter: @unchecked Sendable {
                     }
                     
                     self.videoInput?.markAsFinished()
-                    self.systemAudioInput?.markAsFinished()
-                    self.microphoneAudioInput?.markAsFinished()
+                    self.primaryAudioInput?.markAsFinished()
+                    self.secondaryAudioInput?.markAsFinished()
                     
                     if endPts.isValid && endPts > startPts {
                         writer.endSession(atSourceTime: endPts)

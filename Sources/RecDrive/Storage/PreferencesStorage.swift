@@ -12,6 +12,8 @@ public final class PreferencesStorage: ObservableObject {
         static let targetFrameRate = "com.recdrive.targetFrameRate"
         static let captureSystemAudio = "com.recdrive.captureSystemAudio"
         static let captureMicrophone = "com.recdrive.captureMicrophone"
+        static let selectedMicrophoneID = "com.recdrive.selectedMicrophoneID"
+        static let mixAudioTracks = "com.recdrive.mixAudioTracks"
         static let customRecordingsPath = "com.recdrive.customRecordingsPath"
         static let lastLessonTitle = "com.recdrive.lastLessonTitle"
         static let annotationHotKeyEnabled = "com.recdrive.annotationHotKeyEnabled"
@@ -33,6 +35,14 @@ public final class PreferencesStorage: ObservableObject {
     
     @Published public var captureMicrophone: Bool {
         didSet { defaults.set(captureMicrophone, forKey: Keys.captureMicrophone) }
+    }
+    
+    @Published public var selectedMicrophoneID: String {
+        didSet { defaults.set(selectedMicrophoneID, forKey: Keys.selectedMicrophoneID) }
+    }
+    
+    @Published public var mixAudioTracks: Bool {
+        didSet { defaults.set(mixAudioTracks, forKey: Keys.mixAudioTracks) }
     }
     
     @Published public var customRecordingsPath: String {
@@ -68,6 +78,8 @@ public final class PreferencesStorage: ObservableObject {
         self.targetFrameRate = defaults.object(forKey: Keys.targetFrameRate) as? Int ?? 60
         self.captureSystemAudio = defaults.object(forKey: Keys.captureSystemAudio) as? Bool ?? true
         self.captureMicrophone = defaults.bool(forKey: Keys.captureMicrophone)
+        self.selectedMicrophoneID = defaults.string(forKey: Keys.selectedMicrophoneID) ?? ""
+        self.mixAudioTracks = defaults.object(forKey: Keys.mixAudioTracks) as? Bool ?? true
         self.customRecordingsPath = defaults.string(forKey: Keys.customRecordingsPath) ?? ""
         self.lastLessonTitle = defaults.string(forKey: Keys.lastLessonTitle) ?? ""
         
@@ -81,6 +93,8 @@ public final class PreferencesStorage: ObservableObject {
         targetFrameRate = 60
         captureSystemAudio = true
         captureMicrophone = false
+        selectedMicrophoneID = ""
+        mixAudioTracks = true
         customRecordingsPath = ""
         lastLessonTitle = ""
         annotationHotKeyEnabled = true

@@ -117,6 +117,8 @@ public final class AppState: ObservableObject {
                 fps: preferences.targetFrameRate,
                 captureSystemAudio: preferences.captureSystemAudio,
                 captureMicrophone: preferences.captureMicrophone,
+                preferredMicrophoneUID: preferences.selectedMicrophoneID,
+                mixAudioTracks: preferences.mixAudioTracks,
                 codec: codec
             )
             

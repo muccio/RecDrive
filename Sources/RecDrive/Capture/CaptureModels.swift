@@ -85,3 +85,19 @@ public struct RecordingMetrics {
     public var frameCount: Int64 = 0
     public var currentBytesWritten: Int64 = 0
 }
+
+// MARK: - Audio Input Device
+
+public struct AudioInputDevice: Identifiable, Hashable, Sendable {
+    public let id: String // Unique UID string
+    public let deviceID: UInt32 // AudioDeviceID
+    public let name: String
+    public let isDefault: Bool
+    
+    public init(id: String, deviceID: UInt32, name: String, isDefault: Bool) {
+        self.id = id
+        self.deviceID = deviceID
+        self.name = name
+        self.isDefault = isDefault
+    }
+}

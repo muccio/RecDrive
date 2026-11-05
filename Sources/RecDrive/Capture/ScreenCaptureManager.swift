@@ -2,6 +2,7 @@ import Foundation
 import ScreenCaptureKit
 import AVFoundation
 import AppKit
+import IOKit.pwr_mgt
 
 /// Core controller orchestrating ScreenCaptureKit screen/window capture,
 /// system audio interception, and external microphone synchronization.
@@ -14,11 +15,15 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
     
     private var stream: SCStream?
     private var mediaWriter: MediaWriter?
-    private let micEngine = MicrophoneEngine()
+    public let micEngine = MicrophoneEngine()
     
     private var timer: Timer?
     private var recordingStartTime: Date?
     private let captureQueue = DispatchQueue(label: "com.recdrive.captureQueue", qos: .userInteractive)
+    
+    // Power management & App Nap prevention during long recordings
+    private var powerAssertionID: IOPMAssertionID = 0
+    private var processActivity: NSObjectProtocol?
     
     public override init() {
         super.init()
@@ -60,6 +65,8 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         fps: Int = 60,
         captureSystemAudio: Bool = true,
         captureMicrophone: Bool = false,
+        preferredMicrophoneUID: String? = nil,
+        mixAudioTracks: Bool = true,
         codec: AVVideoCodecType = .hevc
     ) async throws {
         switch recordingState {
@@ -79,6 +86,8 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         timer?.invalidate()
         timer = nil
         micEngine.stopCapture()
+        releaseSleepAssertions()
+        
         if let oldStream = self.stream {
             self.stream = nil
             Task.detached {
@@ -88,6 +97,9 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         self.mediaWriter = nil
         
         do {
+            // Prevent System Sleep and Display Sleep for long uninterrupted recordings
+            acquireSleepAssertions()
+            
             // 1. Determine filter and dimensions
             let filter: SCContentFilter
             var width: Int
@@ -122,11 +134,11 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
                 config.channelCount = 2
             }
             
-            // 3. Start Microphone Capture first (if requested) so we know its exact channel count & status
+            // 3. Start Resilient Microphone Capture (if requested)
             var micActive = false
             if captureMicrophone {
                 do {
-                    try micEngine.startCapture { [weak self] micSampleBuffer in
+                    try micEngine.startCapture(preferredDeviceUID: preferredMicrophoneUID) { [weak self] micSampleBuffer in
                         self?.mediaWriter?.appendMicrophoneAudioSampleBuffer(micSampleBuffer)
                     }
                     micActive = true
@@ -146,7 +158,8 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
                 hasSystemAudio: captureSystemAudio,
                 hasMicrophoneAudio: micActive,
                 microphoneSampleRate: micEngine.sampleRate,
-                microphoneChannels: micEngine.channelCount
+                microphoneChannels: micEngine.channelCount,
+                mixAudioTracks: mixAudioTracks
             )
             try writer.startWriting()
             self.mediaWriter = writer
@@ -174,6 +187,7 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
                 }
             }
         } catch {
+            releaseSleepAssertions()
             micEngine.stopCapture()
             self.mediaWriter = nil
             self.stream = nil
@@ -187,6 +201,7 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
     @MainActor
     public func stopCapture() async throws -> URL {
         guard case .recording = recordingState else {
+            releaseSleepAssertions()
             self.recordingState = .idle
             throw NSError(domain: "RecDrive.Capture", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nessuna registrazione attiva da fermare."])
         }
@@ -195,7 +210,10 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
         timer?.invalidate()
         timer = nil
         
-        // 1. Instantly stop microphone ingress
+        // 1. Release sleep prevention assertion
+        releaseSleepAssertions()
+        
+        // 2. Instantly stop microphone ingress
         micEngine.stopCapture()
         
         // 2. Detach and stop ScreenCaptureKit stream with a non-blocking 2-second timeout
@@ -257,6 +275,39 @@ public final class ScreenCaptureManager: NSObject, ObservableObject, @unchecked 
             }
         }
     }
+    
+    // MARK: - Sleep & Power Management
+    
+    private func acquireSleepAssertions() {
+        releaseSleepAssertions()
+        
+        var assertionID: IOPMAssertionID = 0
+        let result = IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            "RecDrive Screen & Audio Recording" as CFString,
+            &assertionID
+        )
+        if result == kIOReturnSuccess {
+            self.powerAssertionID = assertionID
+        }
+        
+        self.processActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled, .idleDisplaySleepDisabled],
+            reason: "RecDrive: Registrazione schermo e audio in corso"
+        )
+    }
+    
+    private func releaseSleepAssertions() {
+        if powerAssertionID != 0 {
+            IOPMAssertionRelease(powerAssertionID)
+            powerAssertionID = 0
+        }
+        if let activity = processActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            processActivity = nil
+        }
+    }
 }
 
 // MARK: - SCStreamOutput & SCStreamDelegate Callbacks
@@ -293,6 +344,7 @@ extension ScreenCaptureManager: SCStreamOutput, SCStreamDelegate {
     
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("[ScreenCaptureManager] Stream stopped with error: \(error)")
+        releaseSleepAssertions()
         Task { @MainActor in
             guard stream === self.stream, case .recording = self.recordingState else { return }
             self.recordingState = .failed(error.localizedDescription)

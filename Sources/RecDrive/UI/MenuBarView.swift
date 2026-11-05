@@ -246,22 +246,51 @@ struct MenuBarView: View {
     // MARK: - Audio Controls
     
     private var audioControlsSection: some View {
-        HStack(spacing: 12) {
-            Toggle(isOn: $preferences.captureSystemAudio) {
-                Label("Audio Sistema", systemImage: "speaker.wave.2")
-                    .font(.caption)
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
+                Toggle(isOn: $preferences.captureSystemAudio) {
+                    Label("Audio Sistema", systemImage: "speaker.wave.2")
+                        .font(.caption)
+                }
+                .toggleStyle(.checkbox)
+                .disabled(appState.isRecording || appState.isFinishing)
+                
+                Spacer()
+                
+                Toggle(isOn: $preferences.captureMicrophone) {
+                    Label("Microfono", systemImage: "mic")
+                        .font(.caption)
+                }
+                .toggleStyle(.checkbox)
+                .disabled(appState.isRecording || appState.isFinishing)
             }
-            .toggleStyle(.checkbox)
-            .disabled(appState.isRecording || appState.isFinishing)
             
-            Spacer()
-            
-            Toggle(isOn: $preferences.captureMicrophone) {
-                Label("Microfono", systemImage: "mic")
-                    .font(.caption)
+            if preferences.captureMicrophone {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(appState.isRecording ? Color.green : Color.secondary.opacity(0.6))
+                        .frame(width: 6, height: 6)
+                    Text(currentMicrophoneName)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, 4)
+                .padding(.top, 1)
             }
-            .toggleStyle(.checkbox)
-            .disabled(appState.isRecording || appState.isFinishing)
+        }
+    }
+    
+    private var currentMicrophoneName: String {
+        if preferences.selectedMicrophoneID.isEmpty {
+            return "Sorgente: \(MicrophoneEngine.currentDefaultDeviceName())"
+        } else {
+            let devices = MicrophoneEngine.availableInputDevices()
+            if let matched = devices.first(where: { $0.id == preferences.selectedMicrophoneID }) {
+                return "Sorgente: \(matched.name)"
+            }
+            return "Sorgente: \(MicrophoneEngine.currentDefaultDeviceName())"
         }
     }
     

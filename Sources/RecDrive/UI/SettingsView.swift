@@ -55,7 +55,7 @@ struct SettingsView: View {
                             Text("RecDrive")
                                 .font(.title3)
                                 .fontWeight(.bold)
-                            Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0")")
+                            Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.6.1")")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .padding(.horizontal, 6)
@@ -145,9 +145,25 @@ struct SettingsView: View {
                 }
             }
             
-            Section(header: Text("Ingressi Audio Predefiniti").font(.headline)) {
+            Section(header: Text("Ingressi Audio & Microfono").font(.headline)) {
                 Toggle("Cattura Audio di Sistema", isOn: $preferences.captureSystemAudio)
-                Toggle("Cattura Microfono Esterno", isOn: $preferences.captureMicrophone)
+                Toggle("Cattura Microfono", isOn: $preferences.captureMicrophone)
+                
+                if preferences.captureMicrophone {
+                    let devices = MicrophoneEngine.availableInputDevices()
+                    Picker("Sorgente Microfono:", selection: $preferences.selectedMicrophoneID) {
+                        Text("Predefinito di sistema (\(MicrophoneEngine.currentDefaultDeviceName()))").tag("")
+                        ForEach(devices) { device in
+                            Text(device.name).tag(device.id)
+                        }
+                    }
+                }
+                
+                Toggle("Unisci Audio Sistema e Voce in una sola traccia", isOn: $preferences.mixAudioTracks)
+                
+                Text("💡 Ripristino automatico intelligente: se auricolari Bluetooth o microfoni USB si scollegano o si scaricano durante lunghe lezioni (es. oltre 3 ore), la registrazione passa istantaneamente al microfono integrato del Mac evitando che l'audio si interrompa.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
         }
         .padding()
